@@ -82,7 +82,7 @@ impl SqliteStore {
         let html: Option<String> = row.get(5)?;
         let date: String = row.get(6)?;
         let headers_json: String = row.get(7)?;
-        let raw: Vec<u8> = row.get(8)?;
+        let raw_data: Vec<u8> = row.get(8)?;
         
         let to: Vec<String> = serde_json::from_str(&to_json).unwrap_or_default();
         let headers: HashMap<String, String> = serde_json::from_str(&headers_json).unwrap_or_default();
@@ -97,7 +97,7 @@ impl SqliteStore {
             date,
             headers,
             attachments: Vec::new(), // Loaded separately
-            raw,
+            raw: raw_data,
         })
     }
 

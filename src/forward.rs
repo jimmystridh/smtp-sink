@@ -34,7 +34,8 @@ pub struct ForwardConfig {
 impl ForwardConfig {
     /// Check if forwarding is configured.
     #[must_use]
-    pub const fn is_enabled(&self) -> bool {
+    #[allow(clippy::missing_const_for_fn)]
+    pub fn is_enabled(&self) -> bool {
         !self.host.is_empty()
     }
 }
