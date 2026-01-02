@@ -18,6 +18,14 @@ jobs:
     strategy:
       matrix:
         include:
+          # Linux native build (for tests)
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: smtp-sink
+            asset_name: smtp-sink-linux-amd64-gnu
+            use_cross: false
+            run_tests: true
+            skip_artifact: true
           # Linux builds (using musl for static linking via cross)
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
@@ -50,13 +58,13 @@ jobs:
             artifact_name: smtp-sink
             asset_name: smtp-sink-macos-amd64
             use_cross: false
-            run_tests: true
+            run_tests: false
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact_name: smtp-sink
             asset_name: smtp-sink-macos-arm64
             use_cross: false
-            run_tests: true
+            run_tests: false
 
     steps:
       - uses: actions/checkout@v4
@@ -100,6 +108,7 @@ jobs:
           }
 
       - name: Package binary
+        if: matrix.skip_artifact != true
         shell: bash
         run: |
           cd target/${{ matrix.target }}/release
@@ -113,6 +122,7 @@ jobs:
           cd ../../../
 
       - name: Upload Release Asset
+        if: matrix.skip_artifact != true
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}
