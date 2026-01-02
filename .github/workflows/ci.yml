@@ -31,13 +31,13 @@ jobs:
             asset_name: smtp-sink-linux-arm64
             use_cross: true
             run_tests: false
-          # Windows builds
+          # Windows builds (tests disabled due to LNK1318 PDB errors on GH runners)
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact_name: smtp-sink.exe
             asset_name: smtp-sink-windows-amd64
             use_cross: false
-            run_tests: true
+            run_tests: false
           - os: windows-latest
             target: aarch64-pc-windows-msvc
             artifact_name: smtp-sink.exe
