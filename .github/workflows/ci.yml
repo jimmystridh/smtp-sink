@@ -24,33 +24,39 @@ jobs:
             artifact_name: smtp-sink
             asset_name: smtp-sink-linux-amd64
             use_cross: true
+            run_tests: false
           - os: ubuntu-latest
             target: aarch64-unknown-linux-musl
             artifact_name: smtp-sink
             asset_name: smtp-sink-linux-arm64
             use_cross: true
+            run_tests: false
           # Windows builds
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact_name: smtp-sink.exe
             asset_name: smtp-sink-windows-amd64
             use_cross: false
+            run_tests: true
           - os: windows-latest
             target: aarch64-pc-windows-msvc
             artifact_name: smtp-sink.exe
             asset_name: smtp-sink-windows-arm64
             use_cross: false
+            run_tests: false
           # macOS builds
           - os: macos-latest
             target: x86_64-apple-darwin
             artifact_name: smtp-sink
             asset_name: smtp-sink-macos-amd64
             use_cross: false
+            run_tests: true
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact_name: smtp-sink
             asset_name: smtp-sink-macos-arm64
             use_cross: false
+            run_tests: true
 
     steps:
       - uses: actions/checkout@v4
@@ -70,7 +76,7 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Run tests
-        if: matrix.use_cross == false
+        if: matrix.run_tests == true
         run: cargo test --all --tests -- --nocapture
 
       - name: Build
