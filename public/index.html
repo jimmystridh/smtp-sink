@@ -422,6 +422,54 @@
         background: #fafafa;
       }
 
+      /* Attachments */
+      .attachments-section {
+        margin-top: 24px;
+        padding-top: 16px;
+        border-top: 1px solid var(--gmail-border);
+      }
+      .attachments-title {
+        font-size: 14px;
+        font-weight: 500;
+        color: var(--gmail-gray);
+        margin-bottom: 12px;
+      }
+      .attachments-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .attachment-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        background: var(--gmail-light-gray);
+        border-radius: 8px;
+        text-decoration: none;
+        color: #202124;
+        font-size: 13px;
+        transition: background 0.2s;
+      }
+      .attachment-item:hover {
+        background: var(--gmail-border);
+      }
+      .attachment-item svg {
+        width: 18px;
+        height: 18px;
+        fill: var(--gmail-gray);
+      }
+      .attachment-name {
+        max-width: 200px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .attachment-size {
+        color: var(--gmail-gray);
+        font-size: 11px;
+      }
+
       /* Empty state */
       .empty-state {
         display: flex;
@@ -625,6 +673,31 @@
         const date = new Date(selectedEmail.date).toLocaleString();
         const initial = (selectedEmail.from || 'U')[0].toUpperCase();
 
+        // Replace cid: references in HTML with our API endpoints
+        let htmlContent = selectedEmail.html || '';
+        if (htmlContent && selectedEmail.id) {
+          htmlContent = htmlContent.replace(/cid:([^"'\s>]+)/gi, (match, cid) => {
+            return `/emails/${encodeURIComponent(selectedEmail.id)}/cid/${encodeURIComponent(cid)}`;
+          });
+        }
+
+        // Build attachments section
+        const attachments = selectedEmail.attachments || [];
+        const attachmentsHtml = attachments.length > 0 ? `
+          <div class="attachments-section">
+            <div class="attachments-title">Attachments (${attachments.length})</div>
+            <div class="attachments-list">
+              ${attachments.map(att => `
+                <a class="attachment-item" href="/emails/${encodeURIComponent(selectedEmail.id)}/attachments/${encodeURIComponent(att.filename)}" target="_blank" download>
+                  <svg viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>
+                  <span class="attachment-name">${escapeHtml(att.filename)}</span>
+                  <span class="attachment-size">${formatSize(att.size)}</span>
+                </a>
+              `).join('')}
+            </div>
+          </div>
+        ` : '';
+
         detailContent.innerHTML = `
           <h1 class="detail-subject">${subject}</h1>
           <div class="detail-header">
@@ -637,8 +710,9 @@
           </div>
           <div class="detail-body">
             ${selectedEmail.text ? `<pre>${escapeHtml(selectedEmail.text)}</pre>` : ''}
-            ${selectedEmail.html ? `<div class="detail-body-html">${selectedEmail.html}</div>` : ''}
+            ${htmlContent ? `<div class="detail-body-html">${htmlContent}</div>` : ''}
           </div>
+          ${attachmentsHtml}
         `;
 
         listView.classList.add('hidden');
@@ -671,6 +745,14 @@
           return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
         }
         return d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+      }
+
+      function formatSize(bytes) {
+        if (bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
       }
 
       function escapeHtml(s) {

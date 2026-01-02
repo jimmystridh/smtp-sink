@@ -60,10 +60,12 @@ pub async fn run_http_server(
     let app = Router::new()
         .route("/", get(serve_index))
         .route("/index.html", get(serve_index))
+        .route("/health", get(health_check))
         .route("/emails", get(get_emails).delete(delete_all_emails))
         .route("/emails/{id}", get(get_email).delete(delete_email))
         .route("/emails/{id}/attachments", get(list_attachments))
         .route("/emails/{id}/attachments/{filename}", get(get_attachment))
+        .route("/emails/{id}/cid/{cid}", get(get_attachment_by_cid))
         .route("/ws", get(ws_handler))
         .fallback(not_found)
         .with_state(state);
@@ -78,6 +80,14 @@ pub async fn run_http_server(
 
 async fn serve_index() -> Html<&'static str> {
     Html(INDEX_HTML)
+}
+
+async fn health_check(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let email_count = state.store.get_all().len();
+    Json(json!({
+        "status": "ok",
+        "email_count": email_count
+    }))
 }
 
 async fn get_emails(
@@ -154,6 +164,24 @@ async fn get_attachment(
                         format!("attachment; filename=\"{}\"", att.filename),
                     ),
                 ],
+                att.data,
+            )
+                .into_response()
+        }
+        None => (StatusCode::NOT_FOUND, "Attachment not found").into_response(),
+    }
+}
+
+async fn get_attachment_by_cid(
+    State(state): State<AppState>,
+    Path((id, cid)): Path<(String, String)>,
+) -> Response {
+    match state.store.get_attachment_by_cid(&id, &cid) {
+        Some(att) => {
+            let content_type = att.content_type.clone();
+            (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, content_type)],
                 att.data,
             )
                 .into_response()

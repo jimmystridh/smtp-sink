@@ -21,8 +21,11 @@ pub trait EmailStorage: Send + Sync {
     fn get_by_id(&self, id: &str) -> Option<MailRecord>;
     fn query(&self, query: &EmailQuery) -> Vec<MailRecord>;
     fn get_attachment(&self, email_id: &str, filename: &str) -> Option<Attachment>;
+    fn get_attachment_by_cid(&self, email_id: &str, cid: &str) -> Option<Attachment>;
     fn clear(&self);
     fn remove(&self, id: &str) -> bool;
+    /// Perform any cleanup needed before shutdown (e.g., flush `SQLite` WAL)
+    fn close(&self) {}
 }
 
 /// Thread-safe in-memory email store with a maximum capacity (ring buffer).
@@ -77,6 +80,13 @@ impl EmailStorage for MemoryStore {
         let emails = self.emails.read().unwrap();
         let email = emails.iter().find(|e| e.id == email_id)?;
         email.attachments.iter().find(|a| a.filename == filename).cloned()
+    }
+
+    #[allow(clippy::significant_drop_tightening)]
+    fn get_attachment_by_cid(&self, email_id: &str, cid: &str) -> Option<Attachment> {
+        let emails = self.emails.read().unwrap();
+        let email = emails.iter().find(|e| e.id == email_id)?;
+        email.attachments.iter().find(|a| a.content_id.as_deref() == Some(cid)).cloned()
     }
 
     fn clear(&self) {

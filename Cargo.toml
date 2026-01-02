@@ -45,6 +45,11 @@ urlencoding = "2"
 rustls = "0.23"
 chrono = "0.4"
 tempfile = "3"
+criterion = { version = "0.5", features = ["async_tokio"] }
+
+[[bench]]
+name = "smtp_throughput"
+harness = false
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }

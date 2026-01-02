@@ -2,6 +2,7 @@
 
 use clap::Parser;
 use smtp_sink::{start_sink, SinkOptions};
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
@@ -133,9 +134,29 @@ async fn main() -> std::io::Result<()> {
 
     let servers = start_sink(opts).await?;
 
-    // Wait for Ctrl+C
-    tokio::signal::ctrl_c().await?;
+    // Wait for shutdown signal (Ctrl+C or SIGTERM)
+    let shutdown = async {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut sigterm = signal(SignalKind::terminate()).expect("failed to register SIGTERM");
+            let mut sigint = signal(SignalKind::interrupt()).expect("failed to register SIGINT");
+            tokio::select! {
+                _ = sigterm.recv() => info!("Received SIGTERM"),
+                _ = sigint.recv() => info!("Received SIGINT"),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            tokio::signal::ctrl_c().await.expect("failed to listen for Ctrl+C");
+            info!("Received Ctrl+C");
+        }
+    };
+
+    shutdown.await;
+    info!("Initiating graceful shutdown...");
     servers.stop().await;
+    info!("Shutdown complete");
 
     Ok(())
 }

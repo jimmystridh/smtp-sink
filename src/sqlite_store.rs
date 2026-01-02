@@ -265,6 +265,24 @@ impl EmailStorage for SqliteStore {
         .ok()
     }
 
+    fn get_attachment_by_cid(&self, email_id: &str, cid: &str) -> Option<Attachment> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT filename, content_type, content_id, data, size FROM attachments WHERE email_id = ? AND content_id = ?")
+            .ok()?;
+        
+        stmt.query_row(params![email_id, cid], |row| {
+            Ok(Attachment {
+                filename: row.get(0)?,
+                content_type: row.get(1)?,
+                content_id: row.get(2)?,
+                data: row.get(3)?,
+                size: row.get(4)?,
+            })
+        })
+        .ok()
+    }
+
     fn clear(&self) {
         let conn = self.conn.lock().unwrap();
         let _ = conn.execute("DELETE FROM emails", []);
@@ -281,5 +299,12 @@ impl EmailStorage for SqliteStore {
             let _ = self.notify.send(());
         }
         removed
+    }
+
+    fn close(&self) {
+        let conn = self.conn.lock().unwrap();
+        // Checkpoint WAL to ensure all data is written to the main database file
+        let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+        tracing::info!("SQLite database checkpointed and ready for shutdown");
     }
 }

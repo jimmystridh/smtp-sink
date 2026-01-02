@@ -1,6 +1,7 @@
 //! SMTP sink library for receiving and exposing emails via HTTP.
 
 mod email;
+pub mod error;
 mod forward;
 mod http;
 mod smtp;
@@ -9,6 +10,7 @@ mod store;
 mod tls;
 
 pub use email::{Attachment, MailRecord};
+pub use error::{Error, Result, SmtpError};
 pub use forward::{ForwardConfig, ForwardHandle, Forwarder};
 pub use smtp::SmtpConfig;
 pub use sqlite_store::SqliteStore;
@@ -68,6 +70,7 @@ pub struct RunningServers {
     smtp_handle: tokio::task::JoinHandle<()>,
     http_handle: tokio::task::JoinHandle<()>,
     shutdown_tx: broadcast::Sender<()>,
+    store: Arc<dyn store::EmailStorage>,
 }
 
 impl RunningServers {
@@ -76,6 +79,8 @@ impl RunningServers {
         let _ = self.shutdown_tx.send(());
         let _ = self.smtp_handle.await;
         let _ = self.http_handle.await;
+        // Close the store (flushes SQLite WAL if applicable)
+        self.store.close();
     }
 }
 
@@ -195,5 +200,6 @@ pub async fn start_sink(opts: SinkOptions) -> std::io::Result<RunningServers> {
         smtp_handle,
         http_handle,
         shutdown_tx,
+        store,
     })
 }

@@ -2257,3 +2257,62 @@ async fn test_sqlite_with_attachments() {
         servers.stop().await;
     }
 }
+
+#[tokio::test]
+async fn test_inline_attachment_by_cid() {
+    use lettre::message::{MultiPart, SinglePart};
+    use lettre::message::header::{ContentType, ContentDisposition, ContentId};
+
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        max: Some(10),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // Create email with inline image
+    let image_data = vec![0x89, 0x50, 0x4E, 0x47]; // PNG header bytes
+    let inline_image = SinglePart::builder()
+        .header(ContentType::parse("image/png").unwrap())
+        .header(ContentDisposition::inline())
+        .header(ContentId::from(String::from("<image001@example.com>")))
+        .body(image_data.clone());
+
+    let html_body = SinglePart::builder()
+        .header(ContentType::TEXT_HTML)
+        .body(String::from(r#"<html><body><img src="cid:image001@example.com"/></body></html>"#));
+
+    let email = Message::builder()
+        .from("sender@example.com".parse().unwrap())
+        .to("recipient@example.com".parse().unwrap())
+        .subject("Inline image test")
+        .multipart(MultiPart::related().singlepart(html_body).singlepart(inline_image))
+        .unwrap();
+
+    send_email(servers.smtp_addr.port(), email, false).await;
+    sleep(Duration::from_millis(100)).await;
+
+    let emails = get_emails(servers.http_addr.port()).await;
+    assert_eq!(emails.len(), 1);
+    
+    // Get attachment by content-id
+    let client = Client::new();
+    let resp = client
+        .get(format!(
+            "http://127.0.0.1:{}/emails/{}/cid/image001@example.com",
+            servers.http_addr.port(),
+            emails[0].id
+        ))
+        .send()
+        .await
+        .unwrap();
+    
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.headers().get("content-type").unwrap(), "image/png");
+    let data = resp.bytes().await.unwrap();
+    assert_eq!(data.as_ref(), &image_data);
+
+    servers.stop().await;
+}
