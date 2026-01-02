@@ -1,0 +1,20 @@
+Source: smtp-sink
+Section: mail
+Priority: optional
+Maintainer: Jimmy Stridh <jimmy@stridh.dev>
+Build-Depends: debhelper-compat (= 13), cargo, rustc
+Standards-Version: 4.6.0
+Homepage: https://github.com/jimmystridh/smtp-sink
+Rules-Requires-Root: no
+
+Package: smtp-sink
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Minimal SMTP sink for local development and testing
+ smtp-sink receives emails via SMTP and exposes them via HTTP for
+ inspection. Features include:
+  - SMTP server with AUTH (PLAIN/LOGIN) support
+  - STARTTLS and implicit TLS
+  - HTTP REST API and WebSocket for real-time updates
+  - Web UI for visual inspection
+  - Catch-all routing for any recipient domain

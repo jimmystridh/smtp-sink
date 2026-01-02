@@ -17,9 +17,27 @@ A minimal SMTP sink for local development and testing. Receives emails via SMTP 
 
 ## Installation
 
+### From source
+
 ```bash
 cargo install --path .
 ```
+
+### Homebrew (macOS/Linux)
+
+```bash
+brew install jimmystridh/tap/smtp-sink
+```
+
+### Arch Linux (AUR)
+
+```bash
+yay -S smtp-sink
+```
+
+### Pre-built binaries
+
+Download from [GitHub Releases](https://github.com/jimmystridh/smtp-sink/releases).
 
 ## Docker
 

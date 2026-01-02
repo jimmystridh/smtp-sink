@@ -1,0 +1,22 @@
+[Unit]
+Description=SMTP Sink - Email testing server
+Documentation=https://github.com/jimmystridh/smtp-sink
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/smtp-sink
+Restart=on-failure
+RestartSec=5
+User=smtp-sink
+Group=smtp-sink
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+
+[Install]
+WantedBy=multi-user.target
