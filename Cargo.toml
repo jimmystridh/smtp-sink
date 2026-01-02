@@ -1,0 +1,49 @@
+[package]
+name = "smtp-sink"
+version = "0.1.0"
+edition = "2024"
+description = "A minimal SMTP sink for local testing"
+license = "MIT"
+
+[[bin]]
+name = "smtp-sink"
+path = "src/main.rs"
+
+[lib]
+name = "smtp_sink"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+tokio-rustls = "0.26"
+rustls = "0.23"
+rustls-pemfile = "2"
+rcgen = "0.13"
+axum = { version = "0.8", features = ["ws"] }
+axum-extra = { version = "0.10", features = ["typed-header"] }
+tower-http = { version = "0.6", features = ["cors"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+mail-parser = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+futures-util = "0.3"
+
+[dev-dependencies]
+lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
+reqwest = { version = "0.12", features = ["json"] }
+tokio-tungstenite = "0.26"
+futures-util = "0.3"
+urlencoding = "2"
+rustls = "0.23"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
