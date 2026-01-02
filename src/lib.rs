@@ -176,7 +176,7 @@ pub async fn start_sink(opts: SinkOptions) -> std::io::Result<RunningServers> {
     let smtp_store = Arc::clone(&store);
     let smtp_shutdown = shutdown_tx.subscribe();
     let smtp_handle = if opts.tls {
-        let acceptor = tls_acceptor.clone().unwrap();
+        let acceptor = tls_acceptor.clone().expect("TLS acceptor required when tls=true");
         tokio::spawn(async move {
             smtp::run_smtps_server(smtp_listener, smtp_store, smtp_config, acceptor, smtp_shutdown)
                 .await;

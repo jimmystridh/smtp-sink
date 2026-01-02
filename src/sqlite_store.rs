@@ -125,7 +125,7 @@ impl SqliteStore {
 #[allow(clippy::significant_drop_tightening)]
 impl EmailStorage for SqliteStore {
     fn push(&self, email: MailRecord) {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect("lock poisoned");
         
         let to_json = serde_json::to_string(&email.to).unwrap_or_default();
         let headers_json = serde_json::to_string(&email.headers).unwrap_or_default();
@@ -170,10 +170,12 @@ impl EmailStorage for SqliteStore {
     }
 
     fn get_all(&self) -> Vec<MailRecord> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
+        let conn = self.conn.lock().expect("lock poisoned");
+        let Ok(mut stmt) = conn
             .prepare("SELECT id, from_addr, to_addrs, subject, text_body, html_body, date, headers, raw FROM emails ORDER BY created_at DESC")
-            .unwrap();
+        else {
+            return Vec::new();
+        };
         
         let mut records: Vec<MailRecord> = stmt
             .query_map([], Self::row_to_record)
@@ -188,7 +190,7 @@ impl EmailStorage for SqliteStore {
     }
 
     fn get_by_id(&self, id: &str) -> Option<MailRecord> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect("lock poisoned");
         let mut stmt = conn
             .prepare("SELECT id, from_addr, to_addrs, subject, text_body, html_body, date, headers, raw FROM emails WHERE id = ?")
             .ok()?;
@@ -199,7 +201,7 @@ impl EmailStorage for SqliteStore {
     }
 
     fn query(&self, query: &EmailQuery) -> Vec<MailRecord> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect("lock poisoned");
         
         let mut sql = String::from(
             "SELECT id, from_addr, to_addrs, subject, text_body, html_body, date, headers, raw FROM emails WHERE 1=1"
@@ -248,7 +250,7 @@ impl EmailStorage for SqliteStore {
     }
 
     fn get_attachment(&self, email_id: &str, filename: &str) -> Option<Attachment> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect("lock poisoned");
         let mut stmt = conn
             .prepare("SELECT filename, content_type, content_id, data, size FROM attachments WHERE email_id = ? AND filename = ?")
             .ok()?;
@@ -266,7 +268,7 @@ impl EmailStorage for SqliteStore {
     }
 
     fn get_attachment_by_cid(&self, email_id: &str, cid: &str) -> Option<Attachment> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect("lock poisoned");
         let mut stmt = conn
             .prepare("SELECT filename, content_type, content_id, data, size FROM attachments WHERE email_id = ? AND content_id = ?")
             .ok()?;
@@ -284,14 +286,14 @@ impl EmailStorage for SqliteStore {
     }
 
     fn clear(&self) {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect("lock poisoned");
         let _ = conn.execute("DELETE FROM emails", []);
         drop(conn);
         let _ = self.notify.send(());
     }
 
     fn remove(&self, id: &str) -> bool {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect("lock poisoned");
         let result = conn.execute("DELETE FROM emails WHERE id = ?", params![id]);
         let removed = result.map(|n| n > 0).unwrap_or(false);
         drop(conn);
@@ -302,7 +304,7 @@ impl EmailStorage for SqliteStore {
     }
 
     fn close(&self) {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().expect("lock poisoned");
         // Checkpoint WAL to ensure all data is written to the main database file
         let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
         tracing::info!("SQLite database checkpointed and ready for shutdown");

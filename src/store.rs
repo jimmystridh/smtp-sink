@@ -49,7 +49,7 @@ impl MemoryStore {
 
 impl EmailStorage for MemoryStore {
     fn push(&self, email: MailRecord) {
-        let mut emails = self.emails.write().unwrap();
+        let mut emails = self.emails.write().expect("lock poisoned");
         emails.push(email);
         while emails.len() > self.max {
             emails.remove(0);
@@ -59,15 +59,15 @@ impl EmailStorage for MemoryStore {
     }
 
     fn get_all(&self) -> Vec<MailRecord> {
-        self.emails.read().unwrap().clone()
+        self.emails.read().expect("lock poisoned").clone()
     }
 
     fn get_by_id(&self, id: &str) -> Option<MailRecord> {
-        self.emails.read().unwrap().iter().find(|e| e.id == id).cloned()
+        self.emails.read().expect("lock poisoned").iter().find(|e| e.id == id).cloned()
     }
 
     fn query(&self, query: &EmailQuery) -> Vec<MailRecord> {
-        let emails = self.emails.read().unwrap();
+        let emails = self.emails.read().expect("lock poisoned");
         emails
             .iter()
             .filter(|e| matches_query(e, query))
@@ -77,25 +77,25 @@ impl EmailStorage for MemoryStore {
 
     #[allow(clippy::significant_drop_tightening)]
     fn get_attachment(&self, email_id: &str, filename: &str) -> Option<Attachment> {
-        let emails = self.emails.read().unwrap();
+        let emails = self.emails.read().expect("lock poisoned");
         let email = emails.iter().find(|e| e.id == email_id)?;
         email.attachments.iter().find(|a| a.filename == filename).cloned()
     }
 
     #[allow(clippy::significant_drop_tightening)]
     fn get_attachment_by_cid(&self, email_id: &str, cid: &str) -> Option<Attachment> {
-        let emails = self.emails.read().unwrap();
+        let emails = self.emails.read().expect("lock poisoned");
         let email = emails.iter().find(|e| e.id == email_id)?;
         email.attachments.iter().find(|a| a.content_id.as_deref() == Some(cid)).cloned()
     }
 
     fn clear(&self) {
-        self.emails.write().unwrap().clear();
+        self.emails.write().expect("lock poisoned").clear();
         let _ = self.notify.send(());
     }
 
     fn remove(&self, id: &str) -> bool {
-        let mut emails = self.emails.write().unwrap();
+        let mut emails = self.emails.write().expect("lock poisoned");
         let Some(pos) = emails.iter().position(|e| e.id == id) else {
             return false;
         };

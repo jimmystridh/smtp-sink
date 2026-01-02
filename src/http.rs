@@ -70,12 +70,14 @@ pub async fn run_http_server(
         .fallback(not_found)
         .with_state(state);
 
-    axum::serve(listener, app)
+    if let Err(e) = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             let _ = shutdown.recv().await;
         })
         .await
-        .unwrap();
+    {
+        tracing::error!("HTTP server error: {e}");
+    }
 }
 
 async fn serve_index() -> Html<&'static str> {
