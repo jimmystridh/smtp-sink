@@ -10,7 +10,7 @@ pub enum Error {
     Io(io::Error),
     /// TLS/certificate errors
     Tls(String),
-    /// SQLite database errors
+    /// `SQLite` database errors
     Database(String),
     /// SMTP protocol errors
     Smtp(SmtpError),
@@ -108,7 +108,7 @@ impl From<Error> for io::Error {
     fn from(e: Error) -> Self {
         match e {
             Error::Io(io_err) => io_err,
-            other => io::Error::other(other.to_string()),
+            other => Self::other(other.to_string()),
         }
     }
 }

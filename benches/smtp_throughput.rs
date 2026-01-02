@@ -2,6 +2,8 @@
 //!
 //! Run with: `cargo bench`
 
+#![allow(clippy::significant_drop_tightening)]
+
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use lettre::transport::smtp::client::Tls;
 use lettre::{Message, SmtpTransport, Transport};
@@ -40,7 +42,7 @@ fn send_email(port: u16, subject: &str) {
 
 /// Send a larger email with HTML content.
 fn send_large_email(port: u16, subject: &str) {
-    let html_body = r#"
+    let html_body = r"
         <!DOCTYPE html>
         <html>
         <head><title>Test Email</title></head>
@@ -57,7 +59,7 @@ fn send_large_email(port: u16, subject: &str) {
             exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.</p>
         </body>
         </html>
-    "#;
+    ";
 
     let email = Message::builder()
         .from("sender@example.com".parse().unwrap())
@@ -110,8 +112,8 @@ fn benchmark_batch_emails(c: &mut Criterion) {
     let mut group = c.benchmark_group("smtp_batch_emails");
     group.measurement_time(Duration::from_secs(15));
 
-    for batch_size in [10, 50, 100] {
-        group.throughput(Throughput::Elements(batch_size as u64));
+    for batch_size in [10_u64, 50, 100] {
+        group.throughput(Throughput::Elements(batch_size));
         group.bench_with_input(
             BenchmarkId::new("batch", batch_size),
             &batch_size,
@@ -138,8 +140,8 @@ fn benchmark_concurrent_connections(c: &mut Criterion) {
     let mut group = c.benchmark_group("smtp_concurrent");
     group.measurement_time(Duration::from_secs(15));
 
-    for num_connections in [2, 4, 8] {
-        group.throughput(Throughput::Elements(num_connections as u64));
+    for num_connections in [2_u64, 4, 8] {
+        group.throughput(Throughput::Elements(num_connections));
         group.bench_with_input(
             BenchmarkId::new("connections", num_connections),
             &num_connections,
