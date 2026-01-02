@@ -6,12 +6,13 @@ use base64::prelude::*;
 use mail_parser::MessageParser;
 use std::collections::HashMap;
 use std::io;
+use std::pin::Pin;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
 use tokio_rustls::TlsAcceptor;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
 /// SMTP server configuration.
@@ -40,7 +41,7 @@ pub async fn run_smtp_server(
                         let store = Arc::clone(&store);
                         let config = config.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = handle_plain_connection(stream, store, config).await {
+                            if let Err(e) = handle_connection(stream, store, config).await {
                                 debug!("SMTP session error: {e}");
                             }
                         });
@@ -77,7 +78,7 @@ pub async fn run_smtps_server(
                         tokio::spawn(async move {
                             match acceptor.accept(stream).await {
                                 Ok(tls_stream) => {
-                                    if let Err(e) = handle_session(tls_stream, store, config, true).await {
+                                    if let Err(e) = handle_tls_connection(tls_stream, store, config).await {
                                         debug!("SMTPS session error: {e}");
                                     }
                                 }
@@ -99,216 +100,340 @@ pub async fn run_smtps_server(
     }
 }
 
-async fn handle_plain_connection(
+/// Result of processing a single SMTP command.
+enum CommandResult {
+    Continue,
+    Quit,
+    StartTls,
+}
+
+/// Handle a plain TCP connection with optional STARTTLS upgrade.
+async fn handle_connection(
     stream: TcpStream,
     store: Arc<EmailStore>,
     config: SmtpConfig,
 ) -> io::Result<()> {
-    let (reader, writer) = tokio::io::split(stream);
-    let reader = BufReader::new(reader);
+    let mut session = Session::new(config.auth_required, false);
     
-    handle_session_inner(reader, writer, store, config, false).await
-}
-
-async fn handle_session<S: AsyncRead + AsyncWrite + Unpin>(
-    stream: S,
-    store: Arc<EmailStore>,
-    config: SmtpConfig,
-    tls_active: bool,
-) -> io::Result<()> {
-    let (reader, writer) = tokio::io::split(stream);
-    let reader = BufReader::new(reader);
+    // Use buffered I/O over the raw stream
+    let mut stream = BufStream::new(stream);
     
-    handle_session_inner(reader, writer, store, config, tls_active).await
-}
+    stream.write_all(b"220 localhost ESMTP smtp-sink\r\n").await?;
+    stream.flush().await?;
 
-#[allow(clippy::too_many_lines)]
-async fn handle_session_inner<R, W>(
-    mut reader: BufReader<R>,
-    mut writer: W,
-    store: Arc<EmailStore>,
-    config: SmtpConfig,
-    tls_active: bool,
-) -> io::Result<()>
-where
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
-{
-    let mut session = Session::new(config.auth_required, tls_active);
-
-    writer.write_all(b"220 localhost ESMTP smtp-sink\r\n").await?;
-    writer.flush().await?;
-
-    let mut line = String::new();
     loop {
-        line.clear();
-        let bytes_read = reader.read_line(&mut line).await?;
-        if bytes_read == 0 {
-            break;
-        }
-
-        let trimmed = line.trim();
-        let cmd = trimmed.to_uppercase();
-
-        // Handle AUTH state machine
-        match &session.auth_state {
-            AuthState::WaitingForPlain => {
-                verify_plain_auth(trimmed, &mut session, &config, &mut writer).await?;
-                session.auth_state = AuthState::None;
-                continue;
-            }
-            AuthState::WaitingForLoginUsername => {
-                if let Ok(decoded) = BASE64_STANDARD.decode(trimmed) {
-                    let username = String::from_utf8_lossy(&decoded).to_string();
-                    writer.write_all(b"334 UGFzc3dvcmQ6\r\n").await?;
-                    writer.flush().await?;
-                    session.auth_state = AuthState::WaitingForLoginPassword(username);
-                } else {
-                    writer.write_all(b"501 Cannot decode\r\n").await?;
-                    writer.flush().await?;
-                    session.auth_state = AuthState::None;
-                }
-                continue;
-            }
-            AuthState::WaitingForLoginPassword(username) => {
-                let username = username.clone();
-                if let Ok(decoded) = BASE64_STANDARD.decode(trimmed) {
-                    let password = String::from_utf8_lossy(&decoded);
-                    if Some(username.as_str()) == config.auth_username.as_deref()
-                        && Some(password.as_ref()) == config.auth_password.as_deref()
-                    {
-                        session.authenticated = true;
-                        writer.write_all(b"235 Authentication successful\r\n").await?;
-                    } else {
-                        writer.write_all(b"535 Authentication failed\r\n").await?;
-                    }
-                } else {
-                    writer.write_all(b"501 Cannot decode\r\n").await?;
-                }
-                writer.flush().await?;
-                session.auth_state = AuthState::None;
-                continue;
-            }
-            AuthState::None => {}
-        }
-
-        if cmd.starts_with("EHLO") || cmd.starts_with("HELO") {
-            writer.write_all(b"250-localhost Hello\r\n").await?;
-            writer.write_all(b"250-SIZE 10485760\r\n").await?;
-            writer.write_all(b"250-8BITMIME\r\n").await?;
-            if config.tls_acceptor.is_some() && !session.tls_active {
-                writer.write_all(b"250-STARTTLS\r\n").await?;
-            }
-            if config.auth_username.is_some() {
-                writer.write_all(b"250-AUTH PLAIN LOGIN\r\n").await?;
-            }
-            writer.write_all(b"250 OK\r\n").await?;
-        } else if cmd.starts_with("STARTTLS") {
-            if config.tls_acceptor.is_none() {
-                writer.write_all(b"454 TLS not available\r\n").await?;
-            } else if session.tls_active {
-                writer.write_all(b"503 TLS already active\r\n").await?;
-            } else {
-                writer.write_all(b"220 Ready to start TLS\r\n").await?;
-                writer.flush().await?;
-                // Note: STARTTLS upgrade requires reuniting the stream
-                // This simplified impl doesn't support it fully
-                // For full support, would need different architecture
-                writer.write_all(b"500 STARTTLS not fully implemented\r\n").await?;
-            }
-        } else if cmd.starts_with("AUTH ") {
-            if config.auth_username.is_none() {
-                writer.write_all(b"503 AUTH not available\r\n").await?;
-            } else {
-                let parts: Vec<&str> = trimmed.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    let mechanism = parts[1].to_uppercase();
-                    match mechanism.as_str() {
-                        "PLAIN" => {
-                            if parts.len() > 2 {
-                                verify_plain_auth(parts[2], &mut session, &config, &mut writer).await?;
-                            } else {
-                                writer.write_all(b"334 \r\n").await?;
-                                session.auth_state = AuthState::WaitingForPlain;
-                            }
+        match process_command(&mut stream, &mut session, &config, &store).await? {
+            CommandResult::Continue => {}
+            CommandResult::Quit => break,
+            CommandResult::StartTls => {
+                // Upgrade to TLS
+                if let Some(ref acceptor) = config.tls_acceptor {
+                    info!("Upgrading connection to TLS");
+                    let inner = stream.into_inner();
+                    match acceptor.clone().accept(inner).await {
+                        Ok(tls_stream) => {
+                            // Continue session on TLS stream
+                            session.tls_active = true;
+                            session.reset();
+                            return handle_tls_session(tls_stream, session, config, store).await;
                         }
-                        "LOGIN" => {
-                            writer.write_all(b"334 VXNlcm5hbWU6\r\n").await?;
-                            session.auth_state = AuthState::WaitingForLoginUsername;
-                        }
-                        _ => {
-                            writer.write_all(b"504 Unrecognized auth type\r\n").await?;
+                        Err(e) => {
+                            debug!("STARTTLS handshake failed: {e}");
+                            return Err(io::Error::other(format!("TLS handshake failed: {e}")));
                         }
                     }
-                } else {
-                    writer.write_all(b"501 Syntax error\r\n").await?;
                 }
             }
-        } else if cmd.starts_with("MAIL FROM:") {
-            if session.auth_required && !session.authenticated {
-                writer.write_all(b"530 Authentication required\r\n").await?;
-            } else {
-                let addr = extract_address(&trimmed[10..]);
-                if !config.whitelist.is_empty() && !config.whitelist.contains(&addr.to_lowercase()) {
-                    writer.write_all(b"550 Sender not allowed\r\n").await?;
-                } else {
-                    session.mail_from = Some(addr);
-                    writer.write_all(b"250 OK\r\n").await?;
-                }
-            }
-        } else if cmd.starts_with("RCPT TO:") {
-            if session.auth_required && !session.authenticated {
-                writer.write_all(b"530 Authentication required\r\n").await?;
-            } else if session.mail_from.is_none() {
-                writer.write_all(b"503 MAIL FROM required first\r\n").await?;
-            } else {
-                // Catch-all: accept any recipient
-                let addr = extract_address(&trimmed[8..]);
-                session.rcpt_to.push(addr);
-                writer.write_all(b"250 OK\r\n").await?;
-            }
-        } else if cmd == "DATA" {
-            if session.auth_required && !session.authenticated {
-                writer.write_all(b"530 Authentication required\r\n").await?;
-            } else if session.mail_from.is_none() {
-                writer.write_all(b"503 MAIL FROM required first\r\n").await?;
-            } else if session.rcpt_to.is_empty() {
-                writer.write_all(b"503 RCPT TO required first\r\n").await?;
-            } else {
-                writer.write_all(b"354 End data with <CR><LF>.<CR><LF>\r\n").await?;
-                writer.flush().await?;
-
-                let data = read_data(&mut reader).await?;
-                let record = parse_email(&data, &session);
-                store.push(record);
-                session.reset();
-
-                writer.write_all(b"250 OK: queued\r\n").await?;
-            }
-        } else if cmd == "RSET" {
-            session.reset();
-            writer.write_all(b"250 OK\r\n").await?;
-        } else if cmd == "NOOP" {
-            writer.write_all(b"250 OK\r\n").await?;
-        } else if cmd == "QUIT" {
-            writer.write_all(b"221 Bye\r\n").await?;
-            writer.flush().await?;
-            break;
-        } else {
-            writer.write_all(b"500 Command not recognized\r\n").await?;
         }
-
-        writer.flush().await?;
     }
 
     Ok(())
 }
 
-async fn verify_plain_auth<W: AsyncWrite + Unpin>(
+/// Handle an already-TLS connection (SMTPS).
+async fn handle_tls_connection<S>(
+    stream: S,
+    store: Arc<EmailStore>,
+    config: SmtpConfig,
+) -> io::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let session = Session::new(config.auth_required, true);
+    handle_tls_session(stream, session, config, store).await
+}
+
+/// Continue an SMTP session over a TLS stream.
+async fn handle_tls_session<S>(
+    stream: S,
+    mut session: Session,
+    config: SmtpConfig,
+    store: Arc<EmailStore>,
+) -> io::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut stream = BufStream::new(stream);
+    
+    // Send greeting if this is a fresh SMTPS connection
+    if session.mail_from.is_none() && session.rcpt_to.is_empty() {
+        stream.write_all(b"220 localhost ESMTP smtp-sink\r\n").await?;
+        stream.flush().await?;
+    }
+
+    loop {
+        match process_command(&mut stream, &mut session, &config, &store).await? {
+            CommandResult::Continue => {}
+            CommandResult::Quit => break,
+            CommandResult::StartTls => {
+                // Already on TLS, this shouldn't happen but handle gracefully
+                stream.write_all(b"503 TLS already active\r\n").await?;
+                stream.flush().await?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// A simple buffered stream wrapper that supports both reading and writing.
+struct BufStream<S> {
+    inner: BufReader<S>,
+}
+
+impl<S: AsyncRead + AsyncWrite + Unpin> BufStream<S> {
+    fn new(stream: S) -> Self {
+        Self {
+            inner: BufReader::new(stream),
+        }
+    }
+
+    fn into_inner(self) -> S {
+        self.inner.into_inner()
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncBufRead for BufStream<S> {
+    fn poll_fill_buf(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<&[u8]>> {
+        Pin::new(&mut self.get_mut().inner).poll_fill_buf(cx)
+    }
+
+    fn consume(self: Pin<&mut Self>, amt: usize) {
+        Pin::new(&mut self.get_mut().inner).consume(amt);
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for BufStream<S> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_read(cx, buf)
+    }
+}
+
+impl<S: AsyncRead + AsyncWrite + Unpin> AsyncWrite for BufStream<S> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<io::Result<usize>> {
+        Pin::new(self.get_mut().inner.get_mut()).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        Pin::new(self.get_mut().inner.get_mut()).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        Pin::new(self.get_mut().inner.get_mut()).poll_shutdown(cx)
+    }
+}
+
+/// Process a single SMTP command.
+#[allow(clippy::too_many_lines)]
+async fn process_command<S>(
+    stream: &mut BufStream<S>,
+    session: &mut Session,
+    config: &SmtpConfig,
+    store: &Arc<EmailStore>,
+) -> io::Result<CommandResult>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut line = String::new();
+    let bytes_read = stream.inner.read_line(&mut line).await?;
+    if bytes_read == 0 {
+        return Ok(CommandResult::Quit);
+    }
+
+    let trimmed = line.trim();
+    let cmd = trimmed.to_uppercase();
+
+    // Handle AUTH state machine
+    match &session.auth_state {
+        AuthState::WaitingForPlain => {
+            verify_plain_auth(trimmed, session, config, stream).await?;
+            session.auth_state = AuthState::None;
+            return Ok(CommandResult::Continue);
+        }
+        AuthState::WaitingForLoginUsername => {
+            if let Ok(decoded) = BASE64_STANDARD.decode(trimmed) {
+                let username = String::from_utf8_lossy(&decoded).to_string();
+                stream.write_all(b"334 UGFzc3dvcmQ6\r\n").await?;
+                stream.flush().await?;
+                session.auth_state = AuthState::WaitingForLoginPassword(username);
+            } else {
+                stream.write_all(b"501 Cannot decode\r\n").await?;
+                stream.flush().await?;
+                session.auth_state = AuthState::None;
+            }
+            return Ok(CommandResult::Continue);
+        }
+        AuthState::WaitingForLoginPassword(username) => {
+            let username = username.clone();
+            if let Ok(decoded) = BASE64_STANDARD.decode(trimmed) {
+                let password = String::from_utf8_lossy(&decoded);
+                if Some(username.as_str()) == config.auth_username.as_deref()
+                    && Some(password.as_ref()) == config.auth_password.as_deref()
+                {
+                    session.authenticated = true;
+                    stream.write_all(b"235 Authentication successful\r\n").await?;
+                } else {
+                    stream.write_all(b"535 Authentication failed\r\n").await?;
+                }
+            } else {
+                stream.write_all(b"501 Cannot decode\r\n").await?;
+            }
+            stream.flush().await?;
+            session.auth_state = AuthState::None;
+            return Ok(CommandResult::Continue);
+        }
+        AuthState::None => {}
+    }
+
+    if cmd.starts_with("EHLO") || cmd.starts_with("HELO") {
+        stream.write_all(b"250-localhost Hello\r\n").await?;
+        stream.write_all(b"250-SIZE 10485760\r\n").await?;
+        stream.write_all(b"250-8BITMIME\r\n").await?;
+        if config.tls_acceptor.is_some() && !session.tls_active {
+            stream.write_all(b"250-STARTTLS\r\n").await?;
+        }
+        if config.auth_username.is_some() {
+            stream.write_all(b"250-AUTH PLAIN LOGIN\r\n").await?;
+        }
+        stream.write_all(b"250 OK\r\n").await?;
+    } else if cmd.starts_with("STARTTLS") {
+        if config.tls_acceptor.is_none() {
+            stream.write_all(b"454 TLS not available\r\n").await?;
+        } else if session.tls_active {
+            stream.write_all(b"503 TLS already active\r\n").await?;
+        } else {
+            stream.write_all(b"220 Ready to start TLS\r\n").await?;
+            stream.flush().await?;
+            return Ok(CommandResult::StartTls);
+        }
+    } else if cmd.starts_with("AUTH ") {
+        if config.auth_username.is_none() {
+            stream.write_all(b"503 AUTH not available\r\n").await?;
+        } else {
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+            if parts.len() >= 2 {
+                let mechanism = parts[1].to_uppercase();
+                match mechanism.as_str() {
+                    "PLAIN" => {
+                        if parts.len() > 2 {
+                            verify_plain_auth(parts[2], session, config, stream).await?;
+                        } else {
+                            stream.write_all(b"334 \r\n").await?;
+                            session.auth_state = AuthState::WaitingForPlain;
+                        }
+                    }
+                    "LOGIN" => {
+                        stream.write_all(b"334 VXNlcm5hbWU6\r\n").await?;
+                        session.auth_state = AuthState::WaitingForLoginUsername;
+                    }
+                    _ => {
+                        stream.write_all(b"504 Unrecognized auth type\r\n").await?;
+                    }
+                }
+            } else {
+                stream.write_all(b"501 Syntax error\r\n").await?;
+            }
+        }
+    } else if cmd.starts_with("MAIL FROM:") {
+        if session.auth_required && !session.authenticated {
+            stream.write_all(b"530 Authentication required\r\n").await?;
+        } else {
+            let addr = extract_address(&trimmed[10..]);
+            if !config.whitelist.is_empty() && !config.whitelist.contains(&addr.to_lowercase()) {
+                stream.write_all(b"550 Sender not allowed\r\n").await?;
+            } else {
+                session.mail_from = Some(addr);
+                stream.write_all(b"250 OK\r\n").await?;
+            }
+        }
+    } else if cmd.starts_with("RCPT TO:") {
+        if session.auth_required && !session.authenticated {
+            stream.write_all(b"530 Authentication required\r\n").await?;
+        } else if session.mail_from.is_none() {
+            stream.write_all(b"503 MAIL FROM required first\r\n").await?;
+        } else {
+            // Catch-all: accept any recipient
+            let addr = extract_address(&trimmed[8..]);
+            session.rcpt_to.push(addr);
+            stream.write_all(b"250 OK\r\n").await?;
+        }
+    } else if cmd == "DATA" {
+        if session.auth_required && !session.authenticated {
+            stream.write_all(b"530 Authentication required\r\n").await?;
+        } else if session.mail_from.is_none() {
+            stream.write_all(b"503 MAIL FROM required first\r\n").await?;
+        } else if session.rcpt_to.is_empty() {
+            stream.write_all(b"503 RCPT TO required first\r\n").await?;
+        } else {
+            stream.write_all(b"354 End data with <CR><LF>.<CR><LF>\r\n").await?;
+            stream.flush().await?;
+
+            let data = read_data(&mut stream.inner).await?;
+            let record = parse_email(&data, session);
+            store.push(record);
+            session.reset();
+
+            stream.write_all(b"250 OK: queued\r\n").await?;
+        }
+    } else if cmd == "RSET" {
+        session.reset();
+        stream.write_all(b"250 OK\r\n").await?;
+    } else if cmd == "NOOP" {
+        stream.write_all(b"250 OK\r\n").await?;
+    } else if cmd == "QUIT" {
+        stream.write_all(b"221 Bye\r\n").await?;
+        stream.flush().await?;
+        return Ok(CommandResult::Quit);
+    } else {
+        stream.write_all(b"500 Command not recognized\r\n").await?;
+    }
+
+    stream.flush().await?;
+    Ok(CommandResult::Continue)
+}
+
+async fn verify_plain_auth<S: AsyncRead + AsyncWrite + Unpin>(
     encoded: &str,
     session: &mut Session,
     config: &SmtpConfig,
-    writer: &mut W,
+    stream: &mut BufStream<S>,
 ) -> io::Result<()> {
     if let Ok(decoded) = BASE64_STANDARD.decode(encoded.trim()) {
         let parts: Vec<&[u8]> = decoded.split(|&b| b == 0).collect();
@@ -320,15 +445,15 @@ async fn verify_plain_auth<W: AsyncWrite + Unpin>(
                 && Some(password.as_ref()) == config.auth_password.as_deref()
             {
                 session.authenticated = true;
-                writer.write_all(b"235 Authentication successful\r\n").await?;
-                writer.flush().await?;
+                stream.write_all(b"235 Authentication successful\r\n").await?;
+                stream.flush().await?;
                 return Ok(());
             }
         }
     }
 
-    writer.write_all(b"535 Authentication failed\r\n").await?;
-    writer.flush().await?;
+    stream.write_all(b"535 Authentication failed\r\n").await?;
+    stream.flush().await?;
     Ok(())
 }
 

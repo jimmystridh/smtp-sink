@@ -974,6 +974,60 @@ async fn test_starttls_advertised() {
     servers.stop().await;
 }
 
+#[tokio::test]
+async fn test_starttls_upgrade_and_send_email() {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        starttls: true,
+        tls_self_signed: true,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let smtp_port = servers.smtp_addr.port();
+    let http_port = servers.http_addr.port();
+    
+    // Use lettre with STARTTLS
+    let result = tokio::task::spawn_blocking(move || {
+        let tls_params = TlsParameters::builder("localhost".to_string())
+            .dangerous_accept_invalid_certs(true)
+            .build()
+            .unwrap();
+        
+        let transport = SmtpTransport::builder_dangerous("127.0.0.1")
+            .port(smtp_port)
+            .timeout(Some(Duration::from_secs(10)))
+            .tls(Tls::Required(tls_params))
+            .build();
+        
+        let email = Message::builder()
+            .from("sender@example.com".parse::<Mailbox>().unwrap())
+            .to("recipient@example.com".parse::<Mailbox>().unwrap())
+            .subject("STARTTLS Test Email")
+            .body("This email was sent over STARTTLS".to_string())
+            .unwrap();
+        
+        transport.send(&email)
+    })
+    .await
+    .unwrap();
+
+    assert!(result.is_ok(), "Email should be sent over STARTTLS: {:?}", result.err());
+    
+    sleep(Duration::from_millis(100)).await;
+
+    let emails = get_emails(http_port).await;
+    assert_eq!(emails.len(), 1);
+    assert_eq!(emails[0].subject.as_deref(), Some("STARTTLS Test Email"));
+    assert!(emails[0].text.as_deref().unwrap().contains("STARTTLS"));
+
+    servers.stop().await;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Additional comprehensive test scenarios
 // ─────────────────────────────────────────────────────────────────────────────
