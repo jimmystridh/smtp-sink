@@ -60,6 +60,38 @@ struct Cli {
     /// `SQLite` database path for persistence (e.g., ./emails.db)
     #[arg(long)]
     db: Option<String>,
+
+    /// Forward emails to this SMTP host
+    #[arg(long)]
+    forward_host: Option<String>,
+
+    /// Forward SMTP port (default: 587 for STARTTLS, 465 for implicit TLS)
+    #[arg(long)]
+    forward_port: Option<u16>,
+
+    /// Use STARTTLS when forwarding
+    #[arg(long)]
+    forward_tls: bool,
+
+    /// Use implicit TLS (SMTPS) when forwarding
+    #[arg(long)]
+    forward_implicit_tls: bool,
+
+    /// SMTP username for forwarding
+    #[arg(long)]
+    forward_username: Option<String>,
+
+    /// SMTP password for forwarding
+    #[arg(long)]
+    forward_password: Option<String>,
+
+    /// Override all recipients when forwarding (catch-all redirect)
+    #[arg(long)]
+    forward_to: Option<String>,
+
+    /// Override sender when forwarding
+    #[arg(long)]
+    forward_from: Option<String>,
 }
 
 #[tokio::main]
@@ -89,6 +121,14 @@ async fn main() -> std::io::Result<()> {
         auth_username: cli.auth_username,
         auth_password: cli.auth_password,
         db_path: cli.db,
+        forward_host: cli.forward_host,
+        forward_port: cli.forward_port,
+        forward_tls: cli.forward_tls,
+        forward_implicit_tls: cli.forward_implicit_tls,
+        forward_username: cli.forward_username,
+        forward_password: cli.forward_password,
+        forward_to: cli.forward_to,
+        forward_from: cli.forward_from,
     };
 
     let servers = start_sink(opts).await?;

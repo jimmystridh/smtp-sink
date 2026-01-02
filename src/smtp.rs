@@ -1,6 +1,7 @@
 //! SMTP server implementation with AUTH and STARTTLS support.
 
 use crate::email::MailRecord;
+use crate::forward::ForwardHandle;
 use crate::store::EmailStorage;
 use base64::prelude::*;
 use mail_parser::{MessageParser, MimeHeaders};
@@ -23,6 +24,7 @@ pub struct SmtpConfig {
     pub auth_required: bool,
     pub auth_username: Option<String>,
     pub auth_password: Option<String>,
+    pub forward_handle: Option<ForwardHandle>,
 }
 
 /// Run the SMTP server (plain text, with optional STARTTLS).
@@ -407,6 +409,12 @@ where
 
             let data = read_data(&mut stream.inner).await?;
             let record = parse_email(&data, session);
+            
+            // Forward email if configured
+            if let Some(ref fwd) = config.forward_handle {
+                fwd.forward(record.clone()).await;
+            }
+            
             store.push(record);
             session.reset();
 

@@ -17,6 +17,7 @@ A minimal SMTP sink for local development and testing. Receives emails via SMTP 
 - **Attachment parsing and download** via API
 - **SQLite persistence** (optional) - survive restarts
 - **Search/filter API** - query by from, to, subject, date
+- **Email forwarding** - relay to external SMTP server
 
 ## Installation
 
@@ -90,6 +91,13 @@ smtp-sink --tls --tls-key ./key.pem --tls-cert ./cert.pem
 
 # With SQLite persistence (emails survive restart)
 smtp-sink --db ./emails.db
+
+# Forward all emails to another server
+smtp-sink --forward-host smtp.example.com --forward-port 587 --forward-tls \
+  --forward-username user --forward-password pass
+
+# Forward with recipient override (catch-all redirect)
+smtp-sink --forward-host smtp.example.com --forward-to dev@example.com
 ```
 
 ## Options
@@ -108,6 +116,14 @@ smtp-sink --db ./emails.db
     --auth-username <USER> Username for SMTP AUTH
     --auth-password <PASS> Password for SMTP AUTH
     --db <PATH>            SQLite database path for persistence
+    --forward-host <HOST>  Forward emails to this SMTP host
+    --forward-port <PORT>  Forward SMTP port (default: 587/465)
+    --forward-tls          Use STARTTLS when forwarding
+    --forward-implicit-tls Use implicit TLS (SMTPS) when forwarding
+    --forward-username <U> SMTP username for forwarding
+    --forward-password <P> SMTP password for forwarding
+    --forward-to <ADDR>    Override all recipients (catch-all redirect)
+    --forward-from <ADDR>  Override sender when forwarding
 ```
 
 ## API

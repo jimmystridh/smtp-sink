@@ -1,6 +1,7 @@
 //! SMTP sink library for receiving and exposing emails via HTTP.
 
 mod email;
+mod forward;
 mod http;
 mod smtp;
 mod sqlite_store;
@@ -8,6 +9,7 @@ mod store;
 mod tls;
 
 pub use email::{Attachment, MailRecord};
+pub use forward::{ForwardConfig, ForwardHandle, Forwarder};
 pub use smtp::SmtpConfig;
 pub use sqlite_store::SqliteStore;
 pub use store::{EmailQuery, EmailStorage, EmailStore, MemoryStore};
@@ -41,6 +43,22 @@ pub struct SinkOptions {
     pub auth_password: Option<String>,
     /// `SQLite` database path for persistence
     pub db_path: Option<String>,
+    /// Forward emails to external SMTP server
+    pub forward_host: Option<String>,
+    /// Forward SMTP port
+    pub forward_port: Option<u16>,
+    /// Use TLS for forwarding
+    pub forward_tls: bool,
+    /// Use implicit TLS for forwarding
+    pub forward_implicit_tls: bool,
+    /// Forward SMTP username
+    pub forward_username: Option<String>,
+    /// Forward SMTP password
+    pub forward_password: Option<String>,
+    /// Override all recipients when forwarding
+    pub forward_to: Option<String>,
+    /// Override sender when forwarding
+    pub forward_from: Option<String>,
 }
 
 /// Running server handles.
@@ -116,6 +134,25 @@ pub async fn start_sink(opts: SinkOptions) -> std::io::Result<RunningServers> {
         http_addr.port()
     );
 
+    // Set up email forwarding if configured
+    let forward_handle: Option<ForwardHandle> = if let Some(ref host) = opts.forward_host {
+        let forward_config = ForwardConfig {
+            host: host.clone(),
+            port: opts.forward_port.unwrap_or(if opts.forward_implicit_tls { 465 } else { 587 }),
+            tls: opts.forward_tls,
+            implicit_tls: opts.forward_implicit_tls,
+            username: opts.forward_username.clone(),
+            password: opts.forward_password.clone(),
+            to_override: opts.forward_to.clone(),
+            from_override: opts.forward_from.clone(),
+        };
+        let (_, handle) = Forwarder::new(forward_config);
+        println!("Forwarding emails to {}:{}", host, opts.forward_port.unwrap_or(587));
+        Some(handle)
+    } else {
+        None
+    };
+
     // Build SMTP config
     let smtp_config = SmtpConfig {
         whitelist: whitelist.clone(),
@@ -127,6 +164,7 @@ pub async fn start_sink(opts: SinkOptions) -> std::io::Result<RunningServers> {
         auth_required: opts.auth_required,
         auth_username: opts.auth_username.clone(),
         auth_password: opts.auth_password.clone(),
+        forward_handle,
     };
 
     // Start SMTP server task
