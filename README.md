@@ -10,7 +10,10 @@ A minimal SMTP sink for local development and testing. Receives emails via SMTP 
 - Web UI for visual inspection
 - Ring buffer with configurable max emails
 - Sender whitelist filtering
-- TLS/SMTPS support with self-signed or custom certificates
+- SMTP AUTH (PLAIN and LOGIN mechanisms)
+- STARTTLS support (upgrade plain connection to TLS)
+- Implicit TLS/SMTPS support
+- Catch-all routing (accepts any recipient domain)
 
 ## Installation
 
@@ -21,7 +24,7 @@ cargo install --path .
 ## Usage
 
 ```bash
-# Basic usage
+# Basic usage (accepts all emails, no auth)
 smtp-sink
 
 # Custom ports
@@ -30,7 +33,16 @@ smtp-sink --smtp-port 2525 --http-port 8080
 # With sender whitelist
 smtp-sink --whitelist alice@example.com,bob@example.com
 
-# With TLS (self-signed)
+# With SMTP AUTH (optional authentication)
+smtp-sink --auth-username myuser --auth-password mypass
+
+# With required SMTP AUTH
+smtp-sink --auth-required --auth-username myuser --auth-password mypass
+
+# With STARTTLS
+smtp-sink --starttls --tls-self-signed
+
+# With implicit TLS (SMTPS)
 smtp-sink --tls --tls-self-signed
 
 # With custom certificates
@@ -44,10 +56,14 @@ smtp-sink --tls --tls-key ./key.pem --tls-cert ./cert.pem
 -p, --http-port <PORT>     HTTP port [default: 1080]
 -w, --whitelist <ADDRS>    Comma-separated allowed senders
 -m, --max <N>              Max emails to keep [default: 10]
-    --tls                  Enable SMTPS
+    --tls                  Enable implicit TLS (SMTPS)
+    --starttls             Enable STARTTLS
     --tls-key <PATH>       TLS private key (PEM)
     --tls-cert <PATH>      TLS certificate (PEM)
     --tls-self-signed      Generate self-signed certificate
+    --auth-required        Require authentication before sending
+    --auth-username <USER> Username for SMTP AUTH
+    --auth-password <PASS> Password for SMTP AUTH
 ```
 
 ## API
@@ -66,8 +82,8 @@ smtp-sink --tls --tls-key ./key.pem --tls-cert ./cert.pem
 # Start the sink
 smtp-sink
 
-# Send a test email
-echo -e "HELO localhost\nMAIL FROM:<test@example.com>\nRCPT TO:<user@example.com>\nDATA\nSubject: Hello\n\nTest message\n.\nQUIT" | nc localhost 1025
+# Send a test email (catch-all accepts any domain)
+echo -e "HELO localhost\nMAIL FROM:<test@example.com>\nRCPT TO:<anyone@anywhere.com>\nDATA\nSubject: Hello\n\nTest message\n.\nQUIT" | nc localhost 1025
 
 # View emails
 curl http://localhost:1080/emails

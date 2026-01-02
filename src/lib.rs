@@ -7,6 +7,7 @@ mod store;
 mod tls;
 
 pub use email::MailRecord;
+pub use smtp::SmtpConfig;
 pub use store::EmailStore;
 
 use std::net::SocketAddr;
@@ -17,15 +18,25 @@ use tokio_rustls::TlsAcceptor;
 
 /// Configuration options for the SMTP sink.
 #[derive(Debug, Clone, Default)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct SinkOptions {
     pub smtp_port: Option<u16>,
     pub http_port: Option<u16>,
     pub whitelist: Vec<String>,
     pub max: Option<usize>,
+    /// Use implicit TLS (SMTPS) - TLS from connection start
     pub tls: bool,
     pub tls_key_path: Option<String>,
     pub tls_cert_path: Option<String>,
     pub tls_self_signed: bool,
+    /// Enable STARTTLS (upgrade plain connection to TLS)
+    pub starttls: bool,
+    /// Require SMTP AUTH before sending
+    pub auth_required: bool,
+    /// Username for SMTP AUTH
+    pub auth_username: Option<String>,
+    /// Password for SMTP AUTH
+    pub auth_password: Option<String>,
 }
 
 /// Running server handles.
@@ -64,8 +75,8 @@ pub async fn start_sink(opts: SinkOptions) -> std::io::Result<RunningServers> {
 
     let store = Arc::new(EmailStore::new(max, email_tx.clone()));
 
-    // Prepare TLS acceptor if requested
-    let tls_acceptor: Option<TlsAcceptor> = if opts.tls {
+    // Prepare TLS acceptor if TLS or STARTTLS is requested
+    let tls_acceptor: Option<TlsAcceptor> = if opts.tls || opts.starttls {
         Some(tls::create_acceptor(&opts).await?)
     } else {
         None
@@ -79,26 +90,46 @@ pub async fn start_sink(opts: SinkOptions) -> std::io::Result<RunningServers> {
     let http_listener = TcpListener::bind(("0.0.0.0", http_port)).await?;
     let http_addr = http_listener.local_addr()?;
 
-    println!("SMTP server listening on port {}", smtp_addr.port());
+    let mode = if opts.tls {
+        "SMTPS"
+    } else if opts.starttls {
+        "SMTP+STARTTLS"
+    } else {
+        "SMTP"
+    };
+    println!("{} server listening on port {}", mode, smtp_addr.port());
     println!(
         "HTTP server listening on port {}, emails at /emails",
         http_addr.port()
     );
 
+    // Build SMTP config
+    let smtp_config = SmtpConfig {
+        whitelist: whitelist.clone(),
+        tls_acceptor: if opts.starttls && !opts.tls {
+            tls_acceptor.clone()
+        } else {
+            None
+        },
+        auth_required: opts.auth_required,
+        auth_username: opts.auth_username.clone(),
+        auth_password: opts.auth_password.clone(),
+    };
+
     // Start SMTP server task
     let smtp_store = Arc::clone(&store);
     let smtp_shutdown = shutdown_tx.subscribe();
-    let smtp_whitelist = whitelist.clone();
-    let smtp_handle = tokio::spawn(async move {
-        smtp::run_smtp_server(
-            smtp_listener,
-            smtp_store,
-            smtp_whitelist,
-            tls_acceptor,
-            smtp_shutdown,
-        )
-        .await;
-    });
+    let smtp_handle = if opts.tls {
+        let acceptor = tls_acceptor.clone().unwrap();
+        tokio::spawn(async move {
+            smtp::run_smtps_server(smtp_listener, smtp_store, smtp_config, acceptor, smtp_shutdown)
+                .await;
+        })
+    } else {
+        tokio::spawn(async move {
+            smtp::run_smtp_server(smtp_listener, smtp_store, smtp_config, smtp_shutdown).await;
+        })
+    };
 
     // Start HTTP server task
     let http_store = Arc::clone(&store);

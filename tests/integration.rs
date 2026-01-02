@@ -775,3 +775,201 @@ async fn test_websocket_receives_updates_on_delete() {
 
     servers.stop().await;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SMTP AUTH tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_auth_advertised_when_credentials_configured() {
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        auth_username: Some("testuser".to_string()),
+        auth_password: Some("testpass".to_string()),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // Use raw socket to check EHLO response
+    let port = servers.smtp_addr.port();
+    let result = tokio::task::spawn_blocking(move || {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpStream;
+        
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        
+        // Read greeting
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        
+        // Send EHLO
+        stream.write_all(b"EHLO localhost\r\n").unwrap();
+        
+        // Read response lines until we get 250 (without dash)
+        let mut has_auth = false;
+        loop {
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            if line.contains("AUTH") {
+                has_auth = true;
+            }
+            if line.starts_with("250 ") {
+                break;
+            }
+        }
+        
+        stream.write_all(b"QUIT\r\n").unwrap();
+        has_auth
+    })
+    .await
+    .unwrap();
+
+    assert!(result, "AUTH should be advertised in EHLO response");
+
+    servers.stop().await;
+}
+
+#[tokio::test]
+async fn test_auth_required_rejects_unauthenticated() {
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        auth_required: true,
+        auth_username: Some("testuser".to_string()),
+        auth_password: Some("testpass".to_string()),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // Try to send without auth - should fail
+    let email = Message::builder()
+        .from("sender@example.com".parse().unwrap())
+        .to("recipient@example.com".parse().unwrap())
+        .subject("No auth")
+        .body("Should fail".to_string())
+        .unwrap();
+
+    let result = try_send_email(servers.smtp_addr.port(), email, false).await;
+    assert!(result.is_err(), "Should reject unauthenticated sender");
+
+    let emails = get_emails(servers.http_addr.port()).await;
+    assert!(emails.is_empty());
+
+    servers.stop().await;
+}
+
+#[tokio::test]
+async fn test_catches_all_recipient_domains() {
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // Send to various random domains - all should be accepted
+    let port = servers.smtp_addr.port();
+    let result = tokio::task::spawn_blocking(move || {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpStream;
+        
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap(); // greeting
+        
+        stream.write_all(b"EHLO localhost\r\n").unwrap();
+        loop {
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            if line.starts_with("250 ") { break; }
+        }
+        
+        stream.write_all(b"MAIL FROM:<sender@example.com>\r\n").unwrap();
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        
+        // Try various recipient domains
+        stream.write_all(b"RCPT TO:<user@random-domain-xyz.com>\r\n").unwrap();
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        let ok1 = line.starts_with("250");
+        
+        stream.write_all(b"RCPT TO:<test@another.domain.org>\r\n").unwrap();
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        let ok2 = line.starts_with("250");
+        
+        stream.write_all(b"RCPT TO:<catch@all.works>\r\n").unwrap();
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        let ok3 = line.starts_with("250");
+        
+        stream.write_all(b"QUIT\r\n").unwrap();
+        
+        ok1 && ok2 && ok3
+    })
+    .await
+    .unwrap();
+
+    assert!(result, "Should accept any recipient domain (catch-all)");
+
+    servers.stop().await;
+}
+
+#[tokio::test]
+async fn test_starttls_advertised() {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        starttls: true,
+        tls_self_signed: true,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let port = servers.smtp_addr.port();
+    let result = tokio::task::spawn_blocking(move || {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpStream;
+        
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        
+        stream.write_all(b"EHLO localhost\r\n").unwrap();
+        
+        let mut has_starttls = false;
+        loop {
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            if line.contains("STARTTLS") {
+                has_starttls = true;
+            }
+            if line.starts_with("250 ") { break; }
+        }
+        
+        stream.write_all(b"QUIT\r\n").unwrap();
+        has_starttls
+    })
+    .await
+    .unwrap();
+
+    assert!(result, "STARTTLS should be advertised");
+
+    servers.stop().await;
+}

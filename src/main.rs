@@ -7,6 +7,7 @@ use tracing_subscriber::EnvFilter;
 #[derive(Parser, Debug)]
 #[command(name = "smtp-sink")]
 #[command(about = "Receive emails via SMTP and expose them via HTTP for testing")]
+#[allow(clippy::struct_excessive_bools)]
 struct Cli {
     /// SMTP port to listen on
     #[arg(short = 's', long, default_value = "1025")]
@@ -24,21 +25,37 @@ struct Cli {
     #[arg(short = 'm', long, default_value = "10")]
     max: usize,
 
-    /// Enable TLS for SMTP (SMTPS)
+    /// Enable implicit TLS (SMTPS) - TLS from connection start
     #[arg(long)]
     tls: bool,
 
-    /// Path to PEM private key for SMTPS
+    /// Enable STARTTLS - upgrade plain connection to TLS
+    #[arg(long)]
+    starttls: bool,
+
+    /// Path to PEM private key for TLS
     #[arg(long)]
     tls_key: Option<String>,
 
-    /// Path to PEM certificate for SMTPS
+    /// Path to PEM certificate for TLS
     #[arg(long)]
     tls_cert: Option<String>,
 
-    /// Generate a self-signed cert when TLS is enabled
+    /// Generate a self-signed certificate
     #[arg(long)]
     tls_self_signed: bool,
+
+    /// Require SMTP AUTH before sending
+    #[arg(long)]
+    auth_required: bool,
+
+    /// Username for SMTP AUTH
+    #[arg(long)]
+    auth_username: Option<String>,
+
+    /// Password for SMTP AUTH
+    #[arg(long)]
+    auth_password: Option<String>,
 }
 
 #[tokio::main]
@@ -60,9 +77,13 @@ async fn main() -> std::io::Result<()> {
         whitelist,
         max: Some(cli.max),
         tls: cli.tls,
+        starttls: cli.starttls,
         tls_key_path: cli.tls_key,
         tls_cert_path: cli.tls_cert,
         tls_self_signed: cli.tls_self_signed,
+        auth_required: cli.auth_required,
+        auth_username: cli.auth_username,
+        auth_password: cli.auth_password,
     };
 
     let servers = start_sink(opts).await?;
