@@ -1,9 +1,9 @@
 //! SMTP server implementation with AUTH and STARTTLS support.
 
 use crate::email::MailRecord;
-use crate::store::EmailStore;
+use crate::store::EmailStorage;
 use base64::prelude::*;
-use mail_parser::MessageParser;
+use mail_parser::{MessageParser, MimeHeaders};
 use std::collections::HashMap;
 use std::io;
 use std::pin::Pin;
@@ -28,7 +28,7 @@ pub struct SmtpConfig {
 /// Run the SMTP server (plain text, with optional STARTTLS).
 pub async fn run_smtp_server(
     listener: TcpListener,
-    store: Arc<EmailStore>,
+    store: Arc<dyn EmailStorage>,
     config: SmtpConfig,
     mut shutdown: broadcast::Receiver<()>,
 ) {
@@ -61,7 +61,7 @@ pub async fn run_smtp_server(
 /// Run the SMTPS server (TLS from the start).
 pub async fn run_smtps_server(
     listener: TcpListener,
-    store: Arc<EmailStore>,
+    store: Arc<dyn EmailStorage>,
     config: SmtpConfig,
     tls_acceptor: TlsAcceptor,
     mut shutdown: broadcast::Receiver<()>,
@@ -110,7 +110,7 @@ enum CommandResult {
 /// Handle a plain TCP connection with optional STARTTLS upgrade.
 async fn handle_connection(
     stream: TcpStream,
-    store: Arc<EmailStore>,
+    store: Arc<dyn EmailStorage>,
     config: SmtpConfig,
 ) -> io::Result<()> {
     let mut session = Session::new(config.auth_required, false);
@@ -153,7 +153,7 @@ async fn handle_connection(
 /// Handle an already-TLS connection (SMTPS).
 async fn handle_tls_connection<S>(
     stream: S,
-    store: Arc<EmailStore>,
+    store: Arc<dyn EmailStorage>,
     config: SmtpConfig,
 ) -> io::Result<()>
 where
@@ -168,7 +168,7 @@ async fn handle_tls_session<S>(
     stream: S,
     mut session: Session,
     config: SmtpConfig,
-    store: Arc<EmailStore>,
+    store: Arc<dyn EmailStorage>,
 ) -> io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -266,7 +266,7 @@ async fn process_command<S>(
     stream: &mut BufStream<S>,
     session: &mut Session,
     config: &SmtpConfig,
-    store: &Arc<EmailStore>,
+    store: &Arc<dyn EmailStorage>,
 ) -> io::Result<CommandResult>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -521,8 +521,10 @@ async fn read_data<R: AsyncBufReadExt + Unpin>(reader: &mut R) -> io::Result<Vec
     Ok(data)
 }
 
-#[allow(clippy::similar_names)]
+#[allow(clippy::similar_names, clippy::too_many_lines)]
 fn parse_email(data: &[u8], session: &Session) -> MailRecord {
+    use crate::email::Attachment;
+    
     let parser = MessageParser::default();
     let parsed = parser.parse(data);
 
@@ -532,7 +534,7 @@ fn parse_email(data: &[u8], session: &Session) -> MailRecord {
         Uuid::new_v4().simple()
     );
 
-    let (from, to, subject, text, html, mail_date, headers) = parsed.map_or_else(
+    let (from, to, subject, text, html, mail_date, headers, attachments) = parsed.map_or_else(
         || {
             (
                 session.mail_from.clone().unwrap_or_else(|| "unknown".to_string()),
@@ -542,6 +544,7 @@ fn parse_email(data: &[u8], session: &Session) -> MailRecord {
                 None,
                 chrono::Utc::now().to_rfc3339(),
                 HashMap::new(),
+                Vec::new(),
             )
         },
         |msg| {
@@ -586,7 +589,38 @@ fn parse_email(data: &[u8], session: &Session) -> MailRecord {
                 })
                 .collect();
 
-            (from, to, subject, text, html, mail_date, headers)
+            // Extract attachments
+            let attachments: Vec<Attachment> = msg
+                .attachments()
+                .map(|part| {
+                    let filename = part.attachment_name().map_or_else(
+                        || format!("attachment_{}", uuid::Uuid::new_v4().simple()),
+                        String::from,
+                    );
+                    
+                    let content_type = part.content_type().map_or_else(
+                        || "application/octet-stream".to_string(),
+                        |ct| ct.subtype().map_or_else(
+                            || ct.ctype().to_string(),
+                            |subtype| format!("{}/{}", ct.ctype(), subtype),
+                        ),
+                    );
+                    
+                    let content_id = part.content_id().map(|s| s.trim_matches(['<', '>']).to_string());
+                    let data = part.contents().to_vec();
+                    let size = data.len();
+                    
+                    Attachment {
+                        filename,
+                        content_type,
+                        size,
+                        content_id,
+                        data,
+                    }
+                })
+                .collect();
+
+            (from, to, subject, text, html, mail_date, headers, attachments)
         },
     );
 
@@ -599,5 +633,7 @@ fn parse_email(data: &[u8], session: &Session) -> MailRecord {
         html,
         date: mail_date,
         headers,
+        attachments,
+        raw: data.to_vec(),
     }
 }

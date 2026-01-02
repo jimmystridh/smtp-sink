@@ -1925,3 +1925,335 @@ async fn test_multipart_email() {
 
     servers.stop().await;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Attachments, Search/Filter, and SQLite Persistence Tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_email_with_attachment() {
+    use lettre::message::{Attachment, MultiPart, SinglePart};
+
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        max: Some(10),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let attachment = Attachment::new(String::from("test.txt"))
+        .body(String::from("Hello, this is a test attachment!"), "text/plain".parse().unwrap());
+
+    let email = Message::builder()
+        .from("sender@example.com".parse().unwrap())
+        .to("recipient@example.com".parse().unwrap())
+        .subject("Email with attachment")
+        .multipart(
+            MultiPart::mixed()
+                .singlepart(
+                    SinglePart::builder()
+                        .header(lettre::message::header::ContentType::TEXT_PLAIN)
+                        .body(String::from("Please see attachment")),
+                )
+                .singlepart(attachment),
+        )
+        .unwrap();
+
+    send_email(servers.smtp_addr.port(), email, false).await;
+    sleep(Duration::from_millis(100)).await;
+
+    let emails = get_emails(servers.http_addr.port()).await;
+    assert_eq!(emails.len(), 1);
+    assert_eq!(emails[0].attachments.len(), 1);
+    assert_eq!(emails[0].attachments[0].filename, "test.txt");
+    assert_eq!(emails[0].attachments[0].content_type, "text/plain");
+
+    // Test GET /emails/:id/attachments
+    let client = Client::new();
+    let resp = client
+        .get(format!("http://127.0.0.1:{}/emails/{}/attachments", 
+            servers.http_addr.port(), emails[0].id))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let attachments: Vec<Value> = resp.json().await.unwrap();
+    assert_eq!(attachments.len(), 1);
+    assert_eq!(attachments[0]["filename"], "test.txt");
+
+    // Test GET /emails/:id/attachments/:filename
+    let resp = client
+        .get(format!("http://127.0.0.1:{}/emails/{}/attachments/test.txt", 
+            servers.http_addr.port(), emails[0].id))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let content = resp.text().await.unwrap();
+    assert!(content.contains("Hello, this is a test attachment!"));
+
+    servers.stop().await;
+}
+
+#[tokio::test]
+async fn test_search_emails_by_from() {
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        max: Some(10),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // Send emails from different senders
+    for sender in ["alice@example.com", "bob@example.com", "alice@other.com"] {
+        let email = Message::builder()
+            .from(sender.parse().unwrap())
+            .to("recipient@example.com".parse().unwrap())
+            .subject(format!("From {sender}"))
+            .body(String::from("Test"))
+            .unwrap();
+        send_email(servers.smtp_addr.port(), email, false).await;
+    }
+    sleep(Duration::from_millis(100)).await;
+
+    let client = Client::new();
+    
+    // Search for alice
+    let resp = client
+        .get(format!("http://127.0.0.1:{}/emails?from=alice", servers.http_addr.port()))
+        .send()
+        .await
+        .unwrap();
+    let emails: Vec<MailRecord> = resp.json().await.unwrap();
+    assert_eq!(emails.len(), 2);
+    
+    // Search for bob
+    let resp = client
+        .get(format!("http://127.0.0.1:{}/emails?from=bob", servers.http_addr.port()))
+        .send()
+        .await
+        .unwrap();
+    let emails: Vec<MailRecord> = resp.json().await.unwrap();
+    assert_eq!(emails.len(), 1);
+    assert!(emails[0].from.contains("bob"));
+
+    servers.stop().await;
+}
+
+#[tokio::test]
+async fn test_search_emails_by_subject() {
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        max: Some(10),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    for subject in ["Important: Review needed", "FYI: Meeting tomorrow", "Important: Budget update"] {
+        let email = Message::builder()
+            .from("sender@example.com".parse().unwrap())
+            .to("recipient@example.com".parse().unwrap())
+            .subject(subject)
+            .body(String::from("Test"))
+            .unwrap();
+        send_email(servers.smtp_addr.port(), email, false).await;
+    }
+    sleep(Duration::from_millis(100)).await;
+
+    let client = Client::new();
+    
+    let resp = client
+        .get(format!("http://127.0.0.1:{}/emails?subject=Important", servers.http_addr.port()))
+        .send()
+        .await
+        .unwrap();
+    let emails: Vec<MailRecord> = resp.json().await.unwrap();
+    assert_eq!(emails.len(), 2);
+
+    servers.stop().await;
+}
+
+#[tokio::test]
+async fn test_get_single_email() {
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        max: Some(10),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let email = Message::builder()
+        .from("sender@example.com".parse().unwrap())
+        .to("recipient@example.com".parse().unwrap())
+        .subject("Get single email test")
+        .body(String::from("Body content"))
+        .unwrap();
+    send_email(servers.smtp_addr.port(), email, false).await;
+    sleep(Duration::from_millis(100)).await;
+
+    let emails = get_emails(servers.http_addr.port()).await;
+    let id = &emails[0].id;
+
+    let client = Client::new();
+    let resp = client
+        .get(format!("http://127.0.0.1:{}/emails/{}", servers.http_addr.port(), id))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let email: MailRecord = resp.json().await.unwrap();
+    assert_eq!(email.subject.as_deref(), Some("Get single email test"));
+
+    // Test 404 for non-existent email
+    let resp = client
+        .get(format!("http://127.0.0.1:{}/emails/nonexistent", servers.http_addr.port()))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+
+    servers.stop().await;
+}
+
+#[tokio::test]
+async fn test_sqlite_persistence() {
+    use tempfile::NamedTempFile;
+    
+    let db_file = NamedTempFile::new().unwrap();
+    let db_path = db_file.path().to_str().unwrap().to_string();
+
+    // Start server with SQLite, send email, stop
+    {
+        let servers = start_sink(SinkOptions {
+            smtp_port: Some(0),
+            http_port: Some(0),
+            max: Some(10),
+            db_path: Some(db_path.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let smtp_port = servers.smtp_addr.port();
+        let http_port = servers.http_addr.port();
+
+        let email = Message::builder()
+            .from("persist@example.com".parse().unwrap())
+            .to("recipient@example.com".parse().unwrap())
+            .subject("Persistence test")
+            .body(String::from("This should survive restart"))
+            .unwrap();
+        send_email(smtp_port, email, false).await;
+        sleep(Duration::from_millis(100)).await;
+
+        let emails = get_emails(http_port).await;
+        assert_eq!(emails.len(), 1);
+
+        servers.stop().await;
+    }
+
+    // Start new server with same DB - email should still be there
+    {
+        let servers = start_sink(SinkOptions {
+            smtp_port: Some(0),
+            http_port: Some(0),
+            max: Some(10),
+            db_path: Some(db_path),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let emails = get_emails(servers.http_addr.port()).await;
+        assert_eq!(emails.len(), 1);
+        assert_eq!(emails[0].subject.as_deref(), Some("Persistence test"));
+        assert!(emails[0].from.contains("persist@example.com"));
+
+        servers.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn test_sqlite_with_attachments() {
+    use lettre::message::{Attachment, MultiPart, SinglePart};
+    use tempfile::NamedTempFile;
+    
+    let db_file = NamedTempFile::new().unwrap();
+    let db_path = db_file.path().to_str().unwrap().to_string();
+
+    let email_id;
+
+    // Store email with attachment
+    {
+        let servers = start_sink(SinkOptions {
+            smtp_port: Some(0),
+            http_port: Some(0),
+            max: Some(10),
+            db_path: Some(db_path.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let attachment = Attachment::new(String::from("data.bin"))
+            .body(vec![0u8, 1, 2, 3, 4, 5], "application/octet-stream".parse().unwrap());
+
+        let email = Message::builder()
+            .from("sender@example.com".parse().unwrap())
+            .to("recipient@example.com".parse().unwrap())
+            .subject("Attachment persistence")
+            .multipart(
+                MultiPart::mixed()
+                    .singlepart(
+                        SinglePart::builder()
+                            .header(lettre::message::header::ContentType::TEXT_PLAIN)
+                            .body(String::from("See attached")),
+                    )
+                    .singlepart(attachment),
+            )
+            .unwrap();
+
+        send_email(servers.smtp_addr.port(), email, false).await;
+        sleep(Duration::from_millis(100)).await;
+
+        let emails = get_emails(servers.http_addr.port()).await;
+        email_id = emails[0].id.clone();
+        assert_eq!(emails[0].attachments.len(), 1);
+
+        servers.stop().await;
+    }
+
+    // Restart and verify attachment is preserved
+    {
+        let servers = start_sink(SinkOptions {
+            smtp_port: Some(0),
+            http_port: Some(0),
+            max: Some(10),
+            db_path: Some(db_path),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let client = Client::new();
+        let resp = client
+            .get(format!("http://127.0.0.1:{}/emails/{}/attachments/data.bin", 
+                servers.http_addr.port(), email_id))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let data = resp.bytes().await.unwrap();
+        assert_eq!(data.as_ref(), &[0u8, 1, 2, 3, 4, 5]);
+
+        servers.stop().await;
+    }
+}

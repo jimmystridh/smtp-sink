@@ -1,13 +1,14 @@
 //! HTTP server with REST API and WebSocket support.
 
-use crate::store::EmailStore;
+use crate::store::{EmailQuery, EmailStorage};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::extract::{Path, Query, State};
+use axum::http::{header, StatusCode};
 use axum::response::{Html, IntoResponse, Json, Response};
-use axum::routing::{delete, get};
+use axum::routing::get;
 use axum::Router;
 use futures_util::{SinkExt, StreamExt};
+use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -18,14 +19,36 @@ const INDEX_HTML: &str = include_str!("../public/index.html");
 
 #[derive(Clone)]
 struct AppState {
-    store: Arc<EmailStore>,
+    store: Arc<dyn EmailStorage>,
     email_notify: broadcast::Sender<()>,
+}
+
+/// Query parameters for email search.
+#[derive(Debug, Deserialize, Default)]
+struct EmailQueryParams {
+    from: Option<String>,
+    to: Option<String>,
+    subject: Option<String>,
+    since: Option<String>,
+    until: Option<String>,
+}
+
+impl From<EmailQueryParams> for EmailQuery {
+    fn from(p: EmailQueryParams) -> Self {
+        Self {
+            from: p.from,
+            to: p.to,
+            subject: p.subject,
+            since: p.since,
+            until: p.until,
+        }
+    }
 }
 
 /// Run the HTTP server.
 pub async fn run_http_server(
     listener: TcpListener,
-    store: Arc<EmailStore>,
+    store: Arc<dyn EmailStorage>,
     email_notify: broadcast::Sender<()>,
     mut shutdown: broadcast::Receiver<()>,
 ) {
@@ -38,7 +61,9 @@ pub async fn run_http_server(
         .route("/", get(serve_index))
         .route("/index.html", get(serve_index))
         .route("/emails", get(get_emails).delete(delete_all_emails))
-        .route("/emails/{id}", delete(delete_email))
+        .route("/emails/{id}", get(get_email).delete(delete_email))
+        .route("/emails/{id}/attachments", get(list_attachments))
+        .route("/emails/{id}/attachments/{filename}", get(get_attachment))
         .route("/ws", get(ws_handler))
         .fallback(not_found)
         .with_state(state);
@@ -55,8 +80,28 @@ async fn serve_index() -> Html<&'static str> {
     Html(INDEX_HTML)
 }
 
-async fn get_emails(State(state): State<AppState>) -> Json<Vec<crate::MailRecord>> {
-    Json(state.store.get_all())
+async fn get_emails(
+    State(state): State<AppState>,
+    Query(params): Query<EmailQueryParams>,
+) -> Json<Vec<crate::MailRecord>> {
+    let has_query = params.from.is_some()
+        || params.to.is_some()
+        || params.subject.is_some()
+        || params.since.is_some()
+        || params.until.is_some();
+
+    if has_query {
+        Json(state.store.query(&params.into()))
+    } else {
+        Json(state.store.get_all())
+    }
+}
+
+async fn get_email(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    state.store.get_by_id(&id).map_or_else(
+        || (StatusCode::NOT_FOUND, "Email not found").into_response(),
+        |email| Json(email).into_response(),
+    )
 }
 
 async fn delete_all_emails(State(state): State<AppState>) -> StatusCode {
@@ -69,6 +114,51 @@ async fn delete_email(State(state): State<AppState>, Path(id): Path<String>) -> 
         StatusCode::NO_CONTENT.into_response()
     } else {
         (StatusCode::NOT_FOUND, "Email not found").into_response()
+    }
+}
+
+async fn list_attachments(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    match state.store.get_by_id(&id) {
+        Some(email) => {
+            let attachments: Vec<_> = email
+                .attachments
+                .iter()
+                .map(|a| {
+                    json!({
+                        "filename": a.filename,
+                        "content_type": a.content_type,
+                        "size": a.size,
+                        "content_id": a.content_id,
+                    })
+                })
+                .collect();
+            Json(attachments).into_response()
+        }
+        None => (StatusCode::NOT_FOUND, "Email not found").into_response(),
+    }
+}
+
+async fn get_attachment(
+    State(state): State<AppState>,
+    Path((id, filename)): Path<(String, String)>,
+) -> Response {
+    match state.store.get_attachment(&id, &filename) {
+        Some(att) => {
+            let content_type = att.content_type.clone();
+            (
+                StatusCode::OK,
+                [
+                    (header::CONTENT_TYPE, content_type),
+                    (
+                        header::CONTENT_DISPOSITION,
+                        format!("attachment; filename=\"{}\"", att.filename),
+                    ),
+                ],
+                att.data,
+            )
+                .into_response()
+        }
+        None => (StatusCode::NOT_FOUND, "Attachment not found").into_response(),
     }
 }
 

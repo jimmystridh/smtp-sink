@@ -21,7 +21,7 @@ struct Cli {
     #[arg(short = 'w', long)]
     whitelist: Option<String>,
 
-    /// Max number of emails to keep in memory
+    /// Max number of emails to keep
     #[arg(short = 'm', long, default_value = "10")]
     max: usize,
 
@@ -56,6 +56,10 @@ struct Cli {
     /// Password for SMTP AUTH
     #[arg(long)]
     auth_password: Option<String>,
+
+    /// `SQLite` database path for persistence (e.g., ./emails.db)
+    #[arg(long)]
+    db: Option<String>,
 }
 
 #[tokio::main]
@@ -84,6 +88,7 @@ async fn main() -> std::io::Result<()> {
         auth_required: cli.auth_required,
         auth_username: cli.auth_username,
         auth_password: cli.auth_password,
+        db_path: cli.db,
     };
 
     let servers = start_sink(opts).await?;

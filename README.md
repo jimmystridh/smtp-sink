@@ -1,4 +1,4 @@
-# smtp-sink
+# smtp-sink 📧
 
 A minimal SMTP sink for local development and testing. Receives emails via SMTP and exposes them via HTTP for inspection.
 
@@ -14,6 +14,9 @@ A minimal SMTP sink for local development and testing. Receives emails via SMTP 
 - STARTTLS support (upgrade plain connection to TLS)
 - Implicit TLS/SMTPS support
 - Catch-all routing (accepts any recipient domain)
+- **Attachment parsing and download** via API
+- **SQLite persistence** (optional) - survive restarts
+- **Search/filter API** - query by from, to, subject, date
 
 ## Installation
 
@@ -52,6 +55,10 @@ docker run -p 1025:1025 -p 1080:1080 jimmystridh/smtp-sink \
 # With self-signed TLS
 docker run -p 1025:1025 -p 1080:1080 jimmystridh/smtp-sink \
   --tls --tls-self-signed
+
+# With SQLite persistence
+docker run -p 1025:1025 -p 1080:1080 -v ./data:/data jimmystridh/smtp-sink \
+  --db /data/emails.db
 ```
 
 ## Usage
@@ -80,6 +87,9 @@ smtp-sink --tls --tls-self-signed
 
 # With custom certificates
 smtp-sink --tls --tls-key ./key.pem --tls-cert ./cert.pem
+
+# With SQLite persistence (emails survive restart)
+smtp-sink --db ./emails.db
 ```
 
 ## Options
@@ -97,6 +107,7 @@ smtp-sink --tls --tls-key ./key.pem --tls-cert ./cert.pem
     --auth-required        Require authentication before sending
     --auth-username <USER> Username for SMTP AUTH
     --auth-password <PASS> Password for SMTP AUTH
+    --db <PATH>            SQLite database path for persistence
 ```
 
 ## API
@@ -105,9 +116,23 @@ smtp-sink --tls --tls-key ./key.pem --tls-cert ./cert.pem
 |--------|----------|-------------|
 | GET | `/` | Web UI |
 | GET | `/emails` | List all emails (JSON) |
+| GET | `/emails?from=alice&subject=test` | Search/filter emails |
+| GET | `/emails/:id` | Get single email |
 | DELETE | `/emails` | Clear all emails |
 | DELETE | `/emails/:id` | Delete single email |
+| GET | `/emails/:id/attachments` | List attachments |
+| GET | `/emails/:id/attachments/:filename` | Download attachment |
 | GET | `/ws` | WebSocket for real-time updates |
+
+### Search Parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `from` | Filter by sender (partial match) |
+| `to` | Filter by recipient (partial match) |
+| `subject` | Filter by subject (partial match) |
+| `since` | Filter emails since date (ISO 8601) |
+| `until` | Filter emails until date (ISO 8601) |
 
 ## Example
 
@@ -120,6 +145,12 @@ echo -e "HELO localhost\nMAIL FROM:<test@example.com>\nRCPT TO:<anyone@anywhere.
 
 # View emails
 curl http://localhost:1080/emails
+
+# Search by sender
+curl "http://localhost:1080/emails?from=test@example.com"
+
+# Get attachments
+curl http://localhost:1080/emails/{id}/attachments
 ```
 
 ## License

@@ -3,12 +3,14 @@
 mod email;
 mod http;
 mod smtp;
+mod sqlite_store;
 mod store;
 mod tls;
 
-pub use email::MailRecord;
+pub use email::{Attachment, MailRecord};
 pub use smtp::SmtpConfig;
-pub use store::EmailStore;
+pub use sqlite_store::SqliteStore;
+pub use store::{EmailQuery, EmailStorage, EmailStore, MemoryStore};
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -37,6 +39,8 @@ pub struct SinkOptions {
     pub auth_username: Option<String>,
     /// Password for SMTP AUTH
     pub auth_password: Option<String>,
+    /// `SQLite` database path for persistence
+    pub db_path: Option<String>,
 }
 
 /// Running server handles.
@@ -73,7 +77,15 @@ pub async fn start_sink(opts: SinkOptions) -> std::io::Result<RunningServers> {
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
     let (email_tx, _) = broadcast::channel::<()>(16);
 
-    let store = Arc::new(EmailStore::new(max, email_tx.clone()));
+    // Create store - SQLite if db_path provided, otherwise in-memory
+    let store: Arc<dyn EmailStorage> = if let Some(ref db_path) = opts.db_path {
+        Arc::new(
+            SqliteStore::open(db_path, max, email_tx.clone())
+                .map_err(|e| std::io::Error::other(format!("Failed to open database: {e}")))?,
+        )
+    } else {
+        Arc::new(MemoryStore::new(max, email_tx.clone()))
+    };
 
     // Prepare TLS acceptor if TLS or STARTTLS is requested
     let tls_acceptor: Option<TlsAcceptor> = if opts.tls || opts.starttls {
@@ -97,7 +109,8 @@ pub async fn start_sink(opts: SinkOptions) -> std::io::Result<RunningServers> {
     } else {
         "SMTP"
     };
-    println!("{} server listening on port {}", mode, smtp_addr.port());
+    let storage_mode = if opts.db_path.is_some() { "SQLite" } else { "memory" };
+    println!("{mode} server listening on port {} ({storage_mode})", smtp_addr.port());
     println!(
         "HTTP server listening on port {}, emails at /emails",
         http_addr.port()
