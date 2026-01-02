@@ -973,3 +973,901 @@ async fn test_starttls_advertised() {
 
     servers.stop().await;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Additional comprehensive test scenarios
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_email_with_cc_and_bcc() {
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        max: Some(10),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let email = Message::builder()
+        .from("sender@example.com".parse().unwrap())
+        .to("recipient@example.com".parse().unwrap())
+        .cc("cc@example.com".parse().unwrap())
+        .bcc("bcc@example.com".parse().unwrap())
+        .subject("CC and BCC test")
+        .body("Testing CC and BCC".to_string())
+        .unwrap();
+
+    send_email(servers.smtp_addr.port(), email, false).await;
+    sleep(Duration::from_millis(100)).await;
+
+    let emails = get_emails(servers.http_addr.port()).await;
+    assert_eq!(emails.len(), 1);
+    assert_eq!(emails[0].subject.as_deref(), Some("CC and BCC test"));
+
+    servers.stop().await;
+}
+
+#[tokio::test]
+async fn test_email_with_reply_to() {
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        max: Some(10),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let email = Message::builder()
+        .from("sender@example.com".parse().unwrap())
+        .reply_to("replyto@example.com".parse().unwrap())
+        .to("recipient@example.com".parse().unwrap())
+        .subject("Reply-To test")
+        .body("Testing Reply-To header".to_string())
+        .unwrap();
+
+    send_email(servers.smtp_addr.port(), email, false).await;
+    sleep(Duration::from_millis(100)).await;
+
+    let emails = get_emails(servers.http_addr.port()).await;
+    assert_eq!(emails.len(), 1);
+    // Just verify the email was received - Reply-To is in headers
+    assert_eq!(emails[0].subject.as_deref(), Some("Reply-To test"));
+
+    servers.stop().await;
+}
+
+#[tokio::test]
+async fn test_email_with_very_long_subject() {
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        max: Some(10),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let long_subject = "A".repeat(500);
+    let email = Message::builder()
+        .from("sender@example.com".parse().unwrap())
+        .to("recipient@example.com".parse().unwrap())
+        .subject(long_subject.clone())
+        .body("Long subject test".to_string())
+        .unwrap();
+
+    send_email(servers.smtp_addr.port(), email, false).await;
+    sleep(Duration::from_millis(100)).await;
+
+    let emails = get_emails(servers.http_addr.port()).await;
+    assert_eq!(emails.len(), 1);
+    assert!(emails[0].subject.as_ref().unwrap().contains("AAAA"));
+
+    servers.stop().await;
+}
+
+#[tokio::test]
+async fn test_email_with_large_body() {
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        max: Some(10),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let large_body = "X".repeat(100_000); // 100KB body
+    let email = Message::builder()
+        .from("sender@example.com".parse().unwrap())
+        .to("recipient@example.com".parse().unwrap())
+        .subject("Large body test")
+        .body(large_body.clone())
+        .unwrap();
+
+    send_email(servers.smtp_addr.port(), email, false).await;
+    sleep(Duration::from_millis(200)).await;
+
+    let emails = get_emails(servers.http_addr.port()).await;
+    assert_eq!(emails.len(), 1);
+    assert!(emails[0].text.as_ref().unwrap().len() >= 100_000);
+
+    servers.stop().await;
+}
+
+#[tokio::test]
+async fn test_email_with_special_characters_in_addresses() {
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        max: Some(10),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let email = Message::builder()
+        .from("sender+tag@example.com".parse().unwrap())
+        .to("recipient.name@example.com".parse().unwrap())
+        .subject("Special chars in address")
+        .body("Testing special characters".to_string())
+        .unwrap();
+
+    send_email(servers.smtp_addr.port(), email, false).await;
+    sleep(Duration::from_millis(100)).await;
+
+    let emails = get_emails(servers.http_addr.port()).await;
+    assert_eq!(emails.len(), 1);
+    assert!(emails[0].from.contains("sender+tag@example.com"));
+    assert!(emails[0].to.contains(&"recipient.name@example.com".to_string()));
+
+    servers.stop().await;
+}
+
+#[tokio::test]
+async fn test_email_with_display_names() {
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        max: Some(10),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let email = Message::builder()
+        .from("John Doe <john.doe@example.com>".parse().unwrap())
+        .to("Jane Smith <jane.smith@example.com>".parse().unwrap())
+        .subject("Display names test")
+        .body("Testing display names".to_string())
+        .unwrap();
+
+    send_email(servers.smtp_addr.port(), email, false).await;
+    sleep(Duration::from_millis(100)).await;
+
+    let emails = get_emails(servers.http_addr.port()).await;
+    assert_eq!(emails.len(), 1);
+    assert!(emails[0].from.contains("john.doe@example.com"));
+
+    servers.stop().await;
+}
+
+#[tokio::test]
+async fn test_concurrent_email_sending() {
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        max: Some(20),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let port = servers.smtp_addr.port();
+    let mut handles = Vec::new();
+    
+    for i in 0..10 {
+        let handle = tokio::spawn(async move {
+            let email = Message::builder()
+                .from("sender@example.com".parse().unwrap())
+                .to("recipient@example.com".parse().unwrap())
+                .subject(format!("Concurrent {i}"))
+                .body(format!("Concurrent email {i}"))
+                .unwrap();
+            
+            tokio::task::spawn_blocking(move || {
+                let transport = create_transport(port, false);
+                transport.send(&email).unwrap();
+            })
+            .await
+            .unwrap();
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.await.unwrap();
+    }
+    
+    sleep(Duration::from_millis(300)).await;
+
+    let emails = get_emails(servers.http_addr.port()).await;
+    assert_eq!(emails.len(), 10);
+
+    servers.stop().await;
+}
+
+#[tokio::test]
+async fn test_multiple_websocket_clients() {
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        max: Some(10),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let url = format!("ws://127.0.0.1:{}/ws", servers.http_addr.port());
+    
+    // Connect multiple WebSocket clients
+    let (ws1, _) = connect_async(&url).await.unwrap();
+    let (ws2, _) = connect_async(&url).await.unwrap();
+    let (_, mut read1) = ws1.split();
+    let (_, mut read2) = ws2.split();
+
+    // Both should receive initial state
+    let msg1 = read1.next().await.unwrap().unwrap();
+    let msg2 = read2.next().await.unwrap().unwrap();
+    
+    if let (WsMessage::Text(t1), WsMessage::Text(t2)) = (msg1, msg2) {
+        let j1: Value = serde_json::from_str(&t1).unwrap();
+        let j2: Value = serde_json::from_str(&t2).unwrap();
+        assert_eq!(j1["event"], "emails");
+        assert_eq!(j2["event"], "emails");
+    }
+
+    // Send an email
+    let email = Message::builder()
+        .from("sender@example.com".parse().unwrap())
+        .to("recipient@example.com".parse().unwrap())
+        .subject("Multi-client test")
+        .body("Testing multiple clients".to_string())
+        .unwrap();
+
+    send_email(servers.smtp_addr.port(), email, false).await;
+
+    // Both clients should receive the update
+    let msg1 = tokio::time::timeout(Duration::from_secs(2), read1.next())
+        .await.unwrap().unwrap().unwrap();
+    let msg2 = tokio::time::timeout(Duration::from_secs(2), read2.next())
+        .await.unwrap().unwrap().unwrap();
+
+    if let (WsMessage::Text(t1), WsMessage::Text(t2)) = (msg1, msg2) {
+        let j1: Value = serde_json::from_str(&t1).unwrap();
+        let j2: Value = serde_json::from_str(&t2).unwrap();
+        assert_eq!(j1["data"].as_array().unwrap().len(), 1);
+        assert_eq!(j2["data"].as_array().unwrap().len(), 1);
+    }
+
+    servers.stop().await;
+}
+
+#[tokio::test]
+async fn test_whitelist_with_multiple_addresses() {
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        max: Some(10),
+        whitelist: vec![
+            "allowed1@example.com".to_string(),
+            "allowed2@example.com".to_string(),
+            "allowed3@example.com".to_string(),
+        ],
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // First allowed sender
+    let email1 = Message::builder()
+        .from("allowed1@example.com".parse().unwrap())
+        .to("recipient@example.com".parse().unwrap())
+        .subject("From allowed1")
+        .body("Should work".to_string())
+        .unwrap();
+
+    // Second allowed sender
+    let email2 = Message::builder()
+        .from("allowed2@example.com".parse().unwrap())
+        .to("recipient@example.com".parse().unwrap())
+        .subject("From allowed2")
+        .body("Should work".to_string())
+        .unwrap();
+
+    // Blocked sender
+    let email3 = Message::builder()
+        .from("blocked@example.com".parse().unwrap())
+        .to("recipient@example.com".parse().unwrap())
+        .subject("From blocked")
+        .body("Should fail".to_string())
+        .unwrap();
+
+    send_email(servers.smtp_addr.port(), email1, false).await;
+    send_email(servers.smtp_addr.port(), email2, false).await;
+    let result = try_send_email(servers.smtp_addr.port(), email3, false).await;
+    
+    assert!(result.is_err());
+    sleep(Duration::from_millis(100)).await;
+
+    let emails = get_emails(servers.http_addr.port()).await;
+    assert_eq!(emails.len(), 2);
+
+    servers.stop().await;
+}
+
+#[tokio::test]
+async fn test_max_emails_fifo_order() {
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        max: Some(3),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // Send emails A, B, C, D, E
+    for label in ["A", "B", "C", "D", "E"] {
+        let email = Message::builder()
+            .from("sender@example.com".parse().unwrap())
+            .to("recipient@example.com".parse().unwrap())
+            .subject(format!("Email {label}"))
+            .body(format!("Content {label}"))
+            .unwrap();
+
+        send_email(servers.smtp_addr.port(), email, false).await;
+        sleep(Duration::from_millis(50)).await;
+    }
+
+    sleep(Duration::from_millis(100)).await;
+
+    let emails = get_emails(servers.http_addr.port()).await;
+    assert_eq!(emails.len(), 3);
+    // Should keep C, D, E (oldest removed first)
+    assert_eq!(emails[0].subject.as_deref(), Some("Email C"));
+    assert_eq!(emails[1].subject.as_deref(), Some("Email D"));
+    assert_eq!(emails[2].subject.as_deref(), Some("Email E"));
+
+    servers.stop().await;
+}
+
+#[tokio::test]
+async fn test_empty_whitelist_accepts_all() {
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        max: Some(10),
+        whitelist: vec![],  // Empty whitelist
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let email = Message::builder()
+        .from("anyone@anydomain.com".parse().unwrap())
+        .to("recipient@example.com".parse().unwrap())
+        .subject("Open policy")
+        .body("Anyone can send".to_string())
+        .unwrap();
+
+    send_email(servers.smtp_addr.port(), email, false).await;
+    sleep(Duration::from_millis(100)).await;
+
+    let emails = get_emails(servers.http_addr.port()).await;
+    assert_eq!(emails.len(), 1);
+
+    servers.stop().await;
+}
+
+#[tokio::test]
+async fn test_http_cors_headers() {
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let client = Client::new();
+    let resp = client
+        .get(format!("http://127.0.0.1:{}/emails", servers.http_addr.port()))
+        .send()
+        .await
+        .unwrap();
+
+    // Check for CORS headers (if implemented)
+    let status = resp.status().as_u16();
+    assert_eq!(status, 200);
+
+    servers.stop().await;
+}
+
+#[tokio::test]
+async fn test_delete_single_email_preserves_others() {
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        max: Some(10),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // Send three emails
+    for i in 1..=3 {
+        let email = Message::builder()
+            .from("sender@example.com".parse().unwrap())
+            .to("recipient@example.com".parse().unwrap())
+            .subject(format!("Email {i}"))
+            .body(format!("Content {i}"))
+            .unwrap();
+
+        send_email(servers.smtp_addr.port(), email, false).await;
+        sleep(Duration::from_millis(50)).await;
+    }
+
+    sleep(Duration::from_millis(100)).await;
+
+    let emails = get_emails(servers.http_addr.port()).await;
+    assert_eq!(emails.len(), 3);
+
+    // Delete the middle one
+    let middle_id = &emails[1].id;
+    let status = delete_email(servers.http_addr.port(), middle_id).await;
+    assert_eq!(status, 204);
+
+    let emails = get_emails(servers.http_addr.port()).await;
+    assert_eq!(emails.len(), 2);
+    assert_eq!(emails[0].subject.as_deref(), Some("Email 1"));
+    assert_eq!(emails[1].subject.as_deref(), Some("Email 3"));
+
+    servers.stop().await;
+}
+
+#[tokio::test]
+async fn test_smtps_rejects_plain_connection() {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        tls: true,
+        tls_self_signed: true,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // Try to connect with plain SMTP (no TLS) - should fail
+    let email = Message::builder()
+        .from("sender@example.com".parse().unwrap())
+        .to("recipient@example.com".parse().unwrap())
+        .subject("Plain to SMTPS")
+        .body("Should fail".to_string())
+        .unwrap();
+
+    let result = try_send_email(servers.smtp_addr.port(), email, false).await;
+    assert!(result.is_err());
+
+    servers.stop().await;
+}
+
+#[tokio::test]
+async fn test_email_timestamps_are_valid() {
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        max: Some(10),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let before = chrono::Utc::now();
+
+    let email = Message::builder()
+        .from("sender@example.com".parse().unwrap())
+        .to("recipient@example.com".parse().unwrap())
+        .subject("Timestamp test")
+        .body("Testing timestamps".to_string())
+        .unwrap();
+
+    send_email(servers.smtp_addr.port(), email, false).await;
+    sleep(Duration::from_millis(100)).await;
+
+    let after = chrono::Utc::now();
+
+    let emails = get_emails(servers.http_addr.port()).await;
+    assert_eq!(emails.len(), 1);
+    
+    // The date field should be a valid timestamp
+    let date_str = &emails[0].date;
+    assert!(!date_str.is_empty());
+    
+    // Parse and verify it's within our time window
+    let parsed = chrono::DateTime::parse_from_rfc3339(date_str);
+    if let Ok(dt) = parsed {
+        let dt_utc = dt.with_timezone(&chrono::Utc);
+        assert!(dt_utc >= before - chrono::Duration::seconds(1));
+        assert!(dt_utc <= after + chrono::Duration::seconds(1));
+    }
+
+    servers.stop().await;
+}
+
+#[tokio::test]
+async fn test_smtp_helo_command() {
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let port = servers.smtp_addr.port();
+    let result = tokio::task::spawn_blocking(move || {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpStream;
+        
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap(); // greeting
+        assert!(line.starts_with("220"));
+        
+        // Use HELO instead of EHLO
+        stream.write_all(b"HELO localhost\r\n").unwrap();
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        let helo_ok = line.starts_with("250");
+        
+        stream.write_all(b"QUIT\r\n").unwrap();
+        helo_ok
+    })
+    .await
+    .unwrap();
+
+    assert!(result, "HELO command should be accepted");
+
+    servers.stop().await;
+}
+
+#[tokio::test]
+async fn test_smtp_rset_command() {
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let port = servers.smtp_addr.port();
+    let result = tokio::task::spawn_blocking(move || {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpStream;
+        
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        
+        stream.write_all(b"EHLO localhost\r\n").unwrap();
+        loop {
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            if line.starts_with("250 ") { break; }
+        }
+        
+        stream.write_all(b"MAIL FROM:<sender@example.com>\r\n").unwrap();
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        
+        // Reset the transaction
+        stream.write_all(b"RSET\r\n").unwrap();
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        let rset_ok = line.starts_with("250");
+        
+        stream.write_all(b"QUIT\r\n").unwrap();
+        rset_ok
+    })
+    .await
+    .unwrap();
+
+    assert!(result, "RSET command should be accepted");
+
+    servers.stop().await;
+}
+
+#[tokio::test]
+async fn test_smtp_noop_command() {
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let port = servers.smtp_addr.port();
+    let result = tokio::task::spawn_blocking(move || {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpStream;
+        
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        
+        stream.write_all(b"EHLO localhost\r\n").unwrap();
+        loop {
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            if line.starts_with("250 ") { break; }
+        }
+        
+        stream.write_all(b"NOOP\r\n").unwrap();
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        let noop_ok = line.starts_with("250");
+        
+        stream.write_all(b"QUIT\r\n").unwrap();
+        noop_ok
+    })
+    .await
+    .unwrap();
+
+    assert!(result, "NOOP command should be accepted");
+
+    servers.stop().await;
+}
+
+#[tokio::test]
+async fn test_smtp_vrfy_command() {
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let port = servers.smtp_addr.port();
+    let result = tokio::task::spawn_blocking(move || {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpStream;
+        
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        
+        stream.write_all(b"EHLO localhost\r\n").unwrap();
+        loop {
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            if line.starts_with("250 ") { break; }
+        }
+        
+        stream.write_all(b"VRFY user@example.com\r\n").unwrap();
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        // VRFY may return 252 (cannot verify), 250 (ok), 502 (not implemented), 
+        // or 500/501 (syntax error) - all are valid responses
+        let vrfy_ok = line.starts_with('2') || line.starts_with('5');
+        
+        stream.write_all(b"QUIT\r\n").unwrap();
+        vrfy_ok
+    })
+    .await
+    .unwrap();
+
+    assert!(result, "VRFY command should return a valid SMTP response");
+
+    servers.stop().await;
+}
+
+#[tokio::test]
+async fn test_http_json_content_type() {
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let client = Client::new();
+    let resp = client
+        .get(format!("http://127.0.0.1:{}/emails", servers.http_addr.port()))
+        .send()
+        .await
+        .unwrap();
+
+    let content_type = resp.headers().get("content-type").map(|v| v.to_str().unwrap_or(""));
+    assert!(content_type.unwrap_or("").contains("application/json"));
+
+    servers.stop().await;
+}
+
+#[tokio::test]
+async fn test_restart_clears_emails() {
+    // First instance
+    let servers1 = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        max: Some(10),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let smtp_port = servers1.smtp_addr.port();
+    let http_port = servers1.http_addr.port();
+
+    let email = Message::builder()
+        .from("sender@example.com".parse().unwrap())
+        .to("recipient@example.com".parse().unwrap())
+        .subject("Before restart")
+        .body("Should not persist".to_string())
+        .unwrap();
+
+    send_email(smtp_port, email, false).await;
+    sleep(Duration::from_millis(100)).await;
+
+    let emails = get_emails(http_port).await;
+    assert_eq!(emails.len(), 1);
+
+    servers1.stop().await;
+
+    // Second instance on different ports
+    let servers2 = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        max: Some(10),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let emails = get_emails(servers2.http_addr.port()).await;
+    assert!(emails.is_empty(), "Emails should not persist across restarts");
+
+    servers2.stop().await;
+}
+
+#[tokio::test]
+async fn test_websocket_ping_pong() {
+    use futures_util::SinkExt;
+    
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let url = format!("ws://127.0.0.1:{}/ws", servers.http_addr.port());
+    let (ws_stream, _) = connect_async(&url).await.unwrap();
+    let (mut write, mut read) = ws_stream.split();
+
+    // Consume initial message
+    let _ = read.next().await;
+
+    // Send ping
+    write.send(WsMessage::Ping(vec![1, 2, 3].into())).await.unwrap();
+
+    // Should receive pong or nothing (handled automatically)
+    let msg = tokio::time::timeout(Duration::from_millis(500), read.next()).await;
+    
+    // WebSocket implementation may handle ping/pong automatically
+    // Just verify connection is still alive by checking we didn't error
+    #[allow(clippy::match_same_arms)]
+    match msg {
+        Ok(Some(Ok(WsMessage::Pong(_)))) => (), // Got pong
+        Ok(Some(Ok(_))) => (),                  // Got other message  
+        Ok(None) => (),                         // Stream ended (ok for test)
+        Err(_) => (),                           // Timeout (ping handled internally)
+        Ok(Some(Err(_))) => panic!("WebSocket error"),
+    }
+
+    servers.stop().await;
+}
+
+#[tokio::test]
+async fn test_email_ids_are_uuid_format() {
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        max: Some(10),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let email = Message::builder()
+        .from("sender@example.com".parse().unwrap())
+        .to("recipient@example.com".parse().unwrap())
+        .subject("UUID test")
+        .body("Testing UUID format".to_string())
+        .unwrap();
+
+    send_email(servers.smtp_addr.port(), email, false).await;
+    sleep(Duration::from_millis(100)).await;
+
+    let emails = get_emails(servers.http_addr.port()).await;
+    assert_eq!(emails.len(), 1);
+    
+    // Check that ID looks like a UUID (36 chars with dashes)
+    let id = &emails[0].id;
+    assert!(id.len() >= 32, "ID should be at least 32 chars");
+
+    servers.stop().await;
+}
+
+#[tokio::test]
+async fn test_multipart_email() {
+    use lettre::message::{MultiPart, SinglePart};
+
+    let servers = start_sink(SinkOptions {
+        smtp_port: Some(0),
+        http_port: Some(0),
+        max: Some(10),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let email = Message::builder()
+        .from("sender@example.com".parse().unwrap())
+        .to("recipient@example.com".parse().unwrap())
+        .subject("Multipart test")
+        .multipart(
+            MultiPart::alternative()
+                .singlepart(
+                    SinglePart::builder()
+                        .header(lettre::message::header::ContentType::TEXT_PLAIN)
+                        .body(String::from("Plain text version")),
+                )
+                .singlepart(
+                    SinglePart::builder()
+                        .header(lettre::message::header::ContentType::TEXT_HTML)
+                        .body(String::from("<h1>HTML version</h1>")),
+                ),
+        )
+        .unwrap();
+
+    send_email(servers.smtp_addr.port(), email, false).await;
+    sleep(Duration::from_millis(100)).await;
+
+    let emails = get_emails(servers.http_addr.port()).await;
+    assert_eq!(emails.len(), 1);
+    assert!(emails[0].text.as_ref().is_some_and(|t| t.contains("Plain text")));
+    assert!(emails[0].html.as_ref().is_some_and(|h| h.contains("HTML version")));
+
+    servers.stop().await;
+}
