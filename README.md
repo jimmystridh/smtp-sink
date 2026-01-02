@@ -21,6 +21,21 @@ A minimal SMTP sink for local development and testing. Receives emails via SMTP 
 cargo install --path .
 ```
 
+## Docker
+
+```bash
+# Run with default settings
+docker run -p 1025:1025 -p 1080:1080 jimmystridh/smtp-sink
+
+# With authentication
+docker run -p 1025:1025 -p 1080:1080 jimmystridh/smtp-sink \
+  --auth-username user --auth-password pass
+
+# With self-signed TLS
+docker run -p 1025:1025 -p 1080:1080 jimmystridh/smtp-sink \
+  --tls --tls-self-signed
+```
+
 ## Usage
 
 ```bash
