@@ -96,7 +96,7 @@ struct Cli {
 }
 
 #[tokio::main]
-async fn main() -> std::io::Result<()> {
+async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
@@ -132,7 +132,13 @@ async fn main() -> std::io::Result<()> {
         forward_from: cli.forward_from,
     };
 
-    let servers = start_sink(opts).await?;
+    let servers = match start_sink(opts).await {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+    };
 
     // Wait for shutdown signal (Ctrl+C or SIGTERM)
     let shutdown = async {
@@ -157,6 +163,4 @@ async fn main() -> std::io::Result<()> {
     info!("Initiating graceful shutdown...");
     servers.stop().await;
     info!("Shutdown complete");
-
-    Ok(())
 }

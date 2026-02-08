@@ -118,11 +118,31 @@ pub async fn start_sink(opts: SinkOptions) -> std::io::Result<RunningServers> {
     };
 
     // Bind SMTP listener
-    let smtp_listener = TcpListener::bind(("0.0.0.0", smtp_port)).await?;
+    let smtp_listener = TcpListener::bind(("0.0.0.0", smtp_port))
+        .await
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AddrInUse {
+                std::io::Error::other(format!(
+                    "SMTP port {smtp_port} is already in use. Is another instance running?"
+                ))
+            } else {
+                e
+            }
+        })?;
     let smtp_addr = smtp_listener.local_addr()?;
 
     // Bind HTTP listener
-    let http_listener = TcpListener::bind(("0.0.0.0", http_port)).await?;
+    let http_listener = TcpListener::bind(("0.0.0.0", http_port))
+        .await
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AddrInUse {
+                std::io::Error::other(format!(
+                    "HTTP port {http_port} is already in use. Is another instance running?"
+                ))
+            } else {
+                e
+            }
+        })?;
     let http_addr = http_listener.local_addr()?;
 
     let mode = if opts.tls {
