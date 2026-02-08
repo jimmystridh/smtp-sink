@@ -415,11 +415,14 @@
         margin: 0;
       }
       .detail-body-html {
+        margin-top: 16px;
+      }
+      .detail-body-html iframe {
+        width: 100%;
+        min-height: 400px;
         border: 1px solid var(--gmail-border);
         border-radius: 8px;
-        padding: 16px;
-        margin-top: 16px;
-        background: #fafafa;
+        background: white;
       }
 
       /* Attachments */
@@ -710,7 +713,7 @@
           </div>
           <div class="detail-body">
             ${selectedEmail.text ? `<pre>${escapeHtml(selectedEmail.text)}</pre>` : ''}
-            ${htmlContent ? `<div class="detail-body-html">${htmlContent}</div>` : ''}
+            ${htmlContent ? `<div class="detail-body-html"><iframe sandbox="allow-same-origin" srcdoc="${htmlContent.replace(/"/g, '&quot;')}"></iframe></div>` : ''}
           </div>
           ${attachmentsHtml}
         `;
