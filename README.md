@@ -19,6 +19,11 @@ A minimal SMTP sink for local development and testing. Receives emails via SMTP 
 - **Search/filter API** - query by from, to, subject, date
 - **Email forwarding** - relay to external SMTP server
 
+## Screenshots
+
+![Web UI inbox](screenshot-ui-01.png)
+![Web UI email details](screenshot-ui-02.png)
+
 ## Installation
 
 ### From source
