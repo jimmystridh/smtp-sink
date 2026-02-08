@@ -85,6 +85,7 @@ impl RunningServers {
 }
 
 /// Start the SMTP sink with the given options.
+#[allow(clippy::too_many_lines)]
 pub async fn start_sink(opts: SinkOptions) -> std::io::Result<RunningServers> {
     let smtp_port = opts.smtp_port.unwrap_or(1025);
     let http_port = opts.http_port.unwrap_or(1080);
